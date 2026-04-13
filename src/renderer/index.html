@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>lookup</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-toolbar">
+        <div class="toolbar-group">
+          <button id="openFileBtn" class="action primary">파일 열기</button>
+          <button id="saveAsBtn" class="action">다른 이름 저장</button>
+          <button id="saveOverwriteBtn" class="action">원본 덮어쓰기</button>
+          <button id="printBtn" class="action">인쇄</button>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="prevPageBtn" class="action">이전</button>
+          <input id="pageInput" class="page-input" type="number" min="1" value="1" />
+          <span id="pageCountLabel" class="muted">/ 0</span>
+          <button id="nextPageBtn" class="action">다음</button>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="zoomOutBtn" class="action">-</button>
+          <span id="zoomLabel" class="muted">100%</span>
+          <button id="zoomInBtn" class="action">+</button>
+          <button id="zoomResetBtn" class="action">원래 크기</button>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="rotateLeftBtn" class="action">왼쪽 회전</button>
+          <button id="rotateRightBtn" class="action">오른쪽 회전</button>
+          <button id="deletePageBtn" class="action danger">현재 페이지 삭제</button>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="editViewBtn" class="action mode active" data-mode="view">보기</button>
+          <button id="editHighlightBtn" class="action mode" data-mode="highlight">형광펜</button>
+          <button id="editPenBtn" class="action mode" data-mode="pen">펜</button>
+          <button id="editTextBtn" class="action mode" data-mode="text">텍스트 메모</button>
+        </div>
+
+        <div class="toolbar-group search-group">
+          <input id="searchInput" class="search-input" type="text" placeholder="문서 안 단어 검색" />
+          <button id="searchBtn" class="action">검색</button>
+          <button id="searchPrevBtn" class="action">이전 결과</button>
+          <button id="searchNextBtn" class="action">다음 결과</button>
+          <span id="searchCountLabel" class="muted">결과 0개</span>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="toggleFullscreenBtn" class="action">전체화면</button>
+          <button id="toggleDarkBtn" class="action">다크모드</button>
+          <button id="checkUpdateBtn" class="action">업데이트 확인</button>
+          <button id="installUpdateBtn" class="action hidden">업데이트 설치</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside id="thumbPanel" class="thumb-panel">
+          <div class="panel-title">페이지 미리보기 (드래그로 순서 변경)</div>
+          <div id="thumbnailList" class="thumb-list"></div>
+        </aside>
+
+        <section id="viewerPanel" class="viewer-panel">
+          <div id="emptyHint" class="empty-hint">
+            <h1>lookup</h1>
+            <p>PDF 파일을 드래그하거나 "파일 열기" 버튼을 눌러 주세요.</p>
+          </div>
+          <div id="pagesContainer" class="pages-container"></div>
+
+          <div id="fullscreenMiniBar" class="fullscreen-mini hidden">
+            <button id="toggleFullscreenViewModeBtn" class="action">전체화면: 연속 스크롤</button>
+            <button id="toggleThumbInFullscreenBtn" class="action">미리보기 표시</button>
+          </div>
+        </section>
+
+        <aside id="searchPanel" class="search-panel">
+          <div class="panel-title">
+            검색 결과
+            <span id="searchPanelCount" class="muted">0건</span>
+          </div>
+          <ul id="searchResultList" class="search-result-list"></ul>
+        </aside>
+      </main>
+
+      <footer id="statusBar" class="status-bar">준비됨</footer>
+    </div>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>
