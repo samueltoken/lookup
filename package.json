@@ -16,6 +16,10 @@
   ],
   "author": "lookup",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samueltoken/lookup.git"
+  },
   "type": "commonjs",
   "dependencies": {
     "electron-updater": "^6.8.3",
