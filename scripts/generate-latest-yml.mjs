@@ -26,14 +26,14 @@ async function main() {
   const pkg = JSON.parse(await fs.readFile(pkgPath, "utf8"));
   const version = String(pkg.version || "").trim();
   if (!version) {
-    throw new Error("package.json에서 version을 찾지 못했습니다.");
+    throw new Error("package.json에서 version 값을 찾지 못했습니다.");
   }
 
   const fileName = `lookup-Setup-${version}.exe`;
   const exePath = path.join(releaseDir, fileName);
   const stat = await fs.stat(exePath);
   if (!stat.isFile()) {
-    throw new Error(`설치 파일이 없습니다: ${exePath}`);
+    throw new Error(`설치 파일을 찾지 못했습니다: ${exePath}`);
   }
 
   const fileBuffer = await fs.readFile(exePath);

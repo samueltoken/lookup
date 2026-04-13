@@ -50,9 +50,6 @@
           <button id="toggleSearchPanelBtn" class="action" data-i18n="searchPanelToggleShow">검색 패널 표시</button>
           <button id="toggleFullscreenBtn" class="action" data-i18n="fullscreen">전체화면</button>
           <button id="toggleDarkBtn" class="action" data-i18n="darkMode">다크모드</button>
-          <button id="settingsBtn" class="action icon-button" aria-label="설정" title="설정">
-            <span class="button-icon" aria-hidden="true">⚙</span>
-          </button>
         </div>
 
         <div class="toolbar-group search-group">
@@ -107,6 +104,7 @@
       <footer id="statusBar" class="status-bar">
         <div class="status-main">
           <span id="statusText">준비 완료</span>
+          <span id="currentVersionLabel" class="muted">현재 버전 -</span>
           <span id="targetVersionLabel" class="muted hidden">대상 버전 -</span>
         </div>
         <div id="updateProgressWrap" class="update-progress hidden">
@@ -116,31 +114,6 @@
           <span id="updateProgressText" class="update-progress-text">0%</span>
         </div>
       </footer>
-    </div>
-
-    <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-      <div class="modal-backdrop" data-close-modal="1"></div>
-      <div class="modal-card">
-        <div class="modal-head">
-          <h2 id="settingsTitle" data-i18n="settingsTitle">설정</h2>
-          <button id="closeSettingsBtn" class="action icon-button" aria-label="닫기">✕</button>
-        </div>
-        <div class="modal-body">
-          <label class="modal-row">
-            <span data-i18n="languageLabel">언어</span>
-            <select id="languageSelect" class="select-input">
-              <option value="ko">한국어</option>
-              <option value="en">English</option>
-            </select>
-          </label>
-          <button id="settingsCheckUpdateBtn" class="action" data-i18n="checkUpdate">업데이트 확인</button>
-          <p id="currentVersionLabel" class="muted">현재 버전 -</p>
-          <button id="contactDeveloperBtn" class="action" data-i18n="contactDeveloper">
-            개발자 문의 (이메일 복사)
-          </button>
-          <p id="settingsMessage" class="muted"></p>
-        </div>
-      </div>
     </div>
 
     <script type="module" src="./renderer.js"></script>
