@@ -1,6 +1,6 @@
 {
   "name": "lookup",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "로그인 없이 바로 쓰는 무료 문서 뷰어",
   "main": "main.js",
   "scripts": {
@@ -64,6 +64,7 @@
       "node_modules/**/*"
     ],
     "win": {
+      "executableName": "lookup",
       "target": [
         {
           "target": "nsis",
@@ -73,11 +74,55 @@
         }
       ],
       "icon": "build/icon.ico",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "fileAssociations": [
+        {
+          "ext": "pdf",
+          "name": "lookup PDF",
+          "description": "Open PDF with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "hwp",
+          "name": "lookup HWP",
+          "description": "Open HWP with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "hwpx",
+          "name": "lookup HWPX",
+          "description": "Open HWPX with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "doc",
+          "name": "lookup DOC",
+          "description": "Open DOC with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "docx",
+          "name": "lookup DOCX",
+          "description": "Open DOCX with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "xls",
+          "name": "lookup XLS",
+          "description": "Open XLS with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "xlsx",
+          "name": "lookup XLSX",
+          "description": "Open XLSX with lookup",
+          "icon": "build/icon.ico"
+        }
+      ]
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "lookup",

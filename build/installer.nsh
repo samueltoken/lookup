@@ -1,45 +1,8 @@
-!include "LogicLib.nsh"
-!include "nsDialogs.nsh"
-!include "FileAssociation.nsh"
+﻿!include "LogicLib.nsh"
 
 !ifndef BUILD_UNINSTALLER
-  Var PdfAssocCheckbox
-  Var ShouldAssociatePdf
-
-  !macro customInit
-    StrCpy $ShouldAssociatePdf "0"
-  !macroend
-
-  !macro customPageAfterChangeDir
-    Page custom PdfAssocPageCreate PdfAssocPageLeave
-  !macroend
-
-  Function PdfAssocPageCreate
-    nsDialogs::Create 1018
-    Pop $0
-    ${If} $0 == error
-      Abort
-    ${EndIf}
-
-    ${NSD_CreateLabel} 0u 0u 100% 24u "체크하면 PDF 파일 더블클릭 시 lookup으로 열립니다."
-    Pop $0
-    ${NSD_CreateCheckbox} 0u 32u 100% 12u ".pdf 파일을 lookup으로 열기"
-    Pop $PdfAssocCheckbox
-    ${NSD_SetState} $PdfAssocCheckbox ${BST_UNCHECKED}
-    nsDialogs::Show
-  FunctionEnd
-
-  Function PdfAssocPageLeave
-    ${NSD_GetState} $PdfAssocCheckbox $0
-    ${If} $0 == ${BST_CHECKED}
-      StrCpy $ShouldAssociatePdf "1"
-    ${Else}
-      StrCpy $ShouldAssociatePdf "0"
-    ${EndIf}
-  FunctionEnd
-
   !macro customInstall
-    ; 바로가기 아이콘 캐시 문제 완화: 이전 바로가기 삭제 후 재생성
+    ; Shortcut/icon refresh to avoid stale Electron cache.
     Delete "$DESKTOP\lookup.lnk"
     Delete "$SMPROGRAMS\lookup.lnk"
     Delete "$SMPROGRAMS\lookup\lookup.lnk"
@@ -49,14 +12,72 @@
     CreateShortCut "$SMPROGRAMS\lookup\lookup.lnk" "$appExe" "" "$INSTDIR\resources\icon.ico" 0
     CreateShortCut "$SMPROGRAMS\lookup\lookup Uninstall.lnk" "$INSTDIR\Uninstall lookup.exe" "" "$INSTDIR\resources\icon.ico" 0
 
-    ${If} $ShouldAssociatePdf == "1"
-      !insertmacro APP_ASSOCIATE "pdf" "lookup.PDF" "PDF 문서" "$INSTDIR\resources\icon.ico,0" "Open with lookup" "$\"$appExe$\" $\"%1$\""
-      !insertmacro UPDATEFILEASSOC
-    ${EndIf}
+    ; Make lookup appear in Windows "Open with" app list for supported formats.
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe" "FriendlyAppName" "lookup"
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".pdf" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".hwp" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".hwpx" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".doc" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".docx" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xls" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xlsx" ""
+
+    WriteRegStr HKCU "Software\Classes\lookup.PDF" "" "lookup PDF"
+    WriteRegStr HKCU "Software\Classes\lookup.PDF\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.PDF\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.HWP" "" "lookup HWP"
+    WriteRegStr HKCU "Software\Classes\lookup.HWP\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.HWP\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.HWPX" "" "lookup HWPX"
+    WriteRegStr HKCU "Software\Classes\lookup.HWPX\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.HWPX\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.DOC" "" "lookup DOC"
+    WriteRegStr HKCU "Software\Classes\lookup.DOC\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.DOC\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.DOCX" "" "lookup DOCX"
+    WriteRegStr HKCU "Software\Classes\lookup.DOCX\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.DOCX\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.XLS" "" "lookup XLS"
+    WriteRegStr HKCU "Software\Classes\lookup.XLS\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.XLS\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.XLSX" "" "lookup XLSX"
+    WriteRegStr HKCU "Software\Classes\lookup.XLSX\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.XLSX\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "lookup.PDF" ""
+    WriteRegStr HKCU "Software\Classes\.hwp\OpenWithProgids" "lookup.HWP" ""
+    WriteRegStr HKCU "Software\Classes\.hwpx\OpenWithProgids" "lookup.HWPX" ""
+    WriteRegStr HKCU "Software\Classes\.doc\OpenWithProgids" "lookup.DOC" ""
+    WriteRegStr HKCU "Software\Classes\.docx\OpenWithProgids" "lookup.DOCX" ""
+    WriteRegStr HKCU "Software\Classes\.xls\OpenWithProgids" "lookup.XLS" ""
+    WriteRegStr HKCU "Software\Classes\.xlsx\OpenWithProgids" "lookup.XLSX" ""
   !macroend
 !else
   !macro customUnInstall
-    !insertmacro APP_UNASSOCIATE "pdf" "lookup.PDF"
-    !insertmacro UPDATEFILEASSOC
+    DeleteRegKey HKCU "Software\Classes\Applications\lookup.exe"
+    DeleteRegKey HKCU "Software\Classes\lookup.PDF"
+    DeleteRegKey HKCU "Software\Classes\lookup.HWP"
+    DeleteRegKey HKCU "Software\Classes\lookup.HWPX"
+    DeleteRegKey HKCU "Software\Classes\lookup.DOC"
+    DeleteRegKey HKCU "Software\Classes\lookup.DOCX"
+    DeleteRegKey HKCU "Software\Classes\lookup.XLS"
+    DeleteRegKey HKCU "Software\Classes\lookup.XLSX"
+
+    DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "lookup.PDF"
+    DeleteRegValue HKCU "Software\Classes\.hwp\OpenWithProgids" "lookup.HWP"
+    DeleteRegValue HKCU "Software\Classes\.hwpx\OpenWithProgids" "lookup.HWPX"
+    DeleteRegValue HKCU "Software\Classes\.doc\OpenWithProgids" "lookup.DOC"
+    DeleteRegValue HKCU "Software\Classes\.docx\OpenWithProgids" "lookup.DOCX"
+    DeleteRegValue HKCU "Software\Classes\.xls\OpenWithProgids" "lookup.XLS"
+    DeleteRegValue HKCU "Software\Classes\.xlsx\OpenWithProgids" "lookup.XLSX"
   !macroend
 !endif
