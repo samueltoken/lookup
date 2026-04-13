@@ -1,16 +1,24 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("lookupAPI", {
-  openPdfDialog: () => ipcRenderer.invoke("dialog:open-pdf"),
+  openDocumentDialog: () => ipcRenderer.invoke("dialog:open-document"),
+  openPdfDialog: () => ipcRenderer.invoke("dialog:open-document"),
+  openDocument: (filePath) => ipcRenderer.invoke("document:open", filePath),
+  convertDocument: (filePath) => ipcRenderer.invoke("document:convert", filePath),
+  isSupportedDocument: (filePath) => ipcRenderer.invoke("document:is-supported", filePath),
   savePdfDialog: (options) => ipcRenderer.invoke("dialog:save-pdf", options),
   confirmOverwrite: (options) => ipcRenderer.invoke("dialog:confirm-overwrite", options),
   readPdfFile: (filePath) => ipcRenderer.invoke("pdf:read-file", filePath),
   writePdfFile: (filePath, data) => ipcRenderer.invoke("pdf:write-file", { filePath, data }),
   printDocument: () => ipcRenderer.invoke("window:print"),
+  copyText: (text) => ipcRenderer.invoke("clipboard:copy-text", text),
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  setLanguage: (language) => ipcRenderer.invoke("settings:set-language", language),
 
   toggleFullScreen: () => ipcRenderer.invoke("window:toggle-fullscreen"),
   setFullScreen: (enabled) => ipcRenderer.invoke("window:set-fullscreen", enabled),
   isFullScreen: () => ipcRenderer.invoke("window:is-fullscreen"),
+  getAppVersion: () => ipcRenderer.invoke("app:get-version"),
 
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
   installUpdateNow: () => ipcRenderer.invoke("update:install-now"),

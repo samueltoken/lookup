@@ -39,8 +39,18 @@
   FunctionEnd
 
   !macro customInstall
+    ; 바로가기 아이콘 캐시 문제 완화: 이전 바로가기 삭제 후 재생성
+    Delete "$DESKTOP\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup\lookup.lnk"
+
+    CreateDirectory "$SMPROGRAMS\lookup"
+    CreateShortCut "$DESKTOP\lookup.lnk" "$appExe" "" "$INSTDIR\resources\icon.ico" 0
+    CreateShortCut "$SMPROGRAMS\lookup\lookup.lnk" "$appExe" "" "$INSTDIR\resources\icon.ico" 0
+    CreateShortCut "$SMPROGRAMS\lookup\lookup Uninstall.lnk" "$INSTDIR\Uninstall lookup.exe" "" "$INSTDIR\resources\icon.ico" 0
+
     ${If} $ShouldAssociatePdf == "1"
-      !insertmacro APP_ASSOCIATE "pdf" "lookup.PDF" "PDF 문서" "$appExe,0" "Open with lookup" "$\"$appExe$\" $\"%1$\""
+      !insertmacro APP_ASSOCIATE "pdf" "lookup.PDF" "PDF 문서" "$INSTDIR\resources\icon.ico,0" "Open with lookup" "$\"$appExe$\" $\"%1$\""
       !insertmacro UPDATEFILEASSOC
     ${EndIf}
   !macroend

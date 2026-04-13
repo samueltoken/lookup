@@ -1,10 +1,10 @@
 {
   "name": "lookup",
-  "version": "1.1.0",
-  "description": "로그인 없이 바로 쓰는 윈도우 PDF 뷰어",
+  "version": "1.1.2",
+  "description": "로그인 없이 바로 쓰는 무료 문서 뷰어",
   "main": "main.js",
   "scripts": {
-    "build:icon": "node scripts/generate-eye-icon.mjs",
+    "build:icon": "node scripts/generate-duck-icon.mjs",
     "start": "npm run build:icon && electron .",
     "dist": "npm run build:icon && electron-builder --win nsis --publish never && node scripts/generate-latest-yml.mjs",
     "pack": "npm run build:icon && electron-builder --dir"
@@ -22,9 +22,15 @@
   },
   "type": "commonjs",
   "dependencies": {
+    "@ohah/hwpjs": "^0.1.0-rc.10",
+    "@rhwp/core": "^0.7.2",
     "electron-updater": "^6.8.3",
+    "hwpx-js": "^0.1.2",
+    "officeparser": "^6.0.7",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.6.205"
+    "pdfjs-dist": "^5.6.205",
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "electron": "^41.2.0",
@@ -39,6 +45,16 @@
       "output": "release",
       "buildResources": "build"
     },
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

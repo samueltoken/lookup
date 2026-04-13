@@ -7,6 +7,9 @@
   --muted: #63758a;
   --accent: #2b79d4;
   --danger: #d54b4b;
+  --left-panel-width: 250px;
+  --right-panel-width: 280px;
+  --resizer-width: 8px;
 }
 
 * {
@@ -27,14 +30,14 @@ body {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .top-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
+  gap: 8px 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--toolbar);
@@ -42,11 +45,18 @@ body {
 
 .toolbar-group {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .search-group {
+  flex: 1 1 460px;
+  min-width: 260px;
+}
+
+.update-group {
   margin-left: auto;
 }
 
@@ -58,6 +68,19 @@ body {
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
+}
+
+.icon-button {
+  min-width: 36px;
+  padding: 6px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.button-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .action:hover {
@@ -106,7 +129,7 @@ body {
 }
 
 .search-input {
-  width: 210px;
+  width: min(260px, 100%);
 }
 
 .muted {
@@ -117,7 +140,31 @@ body {
 .workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr) 280px;
+  grid-template-columns:
+    var(--left-panel-width)
+    var(--resizer-width)
+    minmax(0, 1fr)
+    var(--resizer-width)
+    var(--right-panel-width);
+}
+
+.workspace.left-collapsed {
+  --left-panel-width: 0px;
+  --resizer-width: 8px;
+}
+
+.workspace.right-collapsed {
+  --right-panel-width: 0px;
+}
+
+.workspace.left-collapsed .thumb-panel,
+.workspace.right-collapsed .search-panel {
+  display: none;
+}
+
+.workspace.left-collapsed #leftResizer,
+.workspace.right-collapsed #rightResizer {
+  display: none;
 }
 
 .panel-title {
@@ -132,15 +179,39 @@ body {
 .thumb-panel,
 .search-panel {
   min-height: 0;
-  border-right: 1px solid var(--line);
   background: var(--panel);
   padding: 10px 8px;
   overflow-y: auto;
 }
 
+.thumb-panel {
+  border-right: 1px solid var(--line);
+}
+
 .search-panel {
-  border-right: none;
   border-left: 1px solid var(--line);
+}
+
+.panel-resizer {
+  width: var(--resizer-width);
+  cursor: col-resize;
+  position: relative;
+  background: transparent;
+}
+
+.panel-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 1px);
+  width: 2px;
+  background: #d1d9e7;
+}
+
+.panel-resizer.active::before,
+.panel-resizer:hover::before {
+  background: #5f95d8;
 }
 
 .thumb-list {
@@ -311,15 +382,53 @@ body {
   right: 10px;
   z-index: 50;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .status-bar {
   border-top: 1px solid var(--line);
   background: var(--toolbar);
-  padding: 7px 12px;
+  padding: 8px 12px;
   font-size: 12px;
   color: #536375;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.status-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.update-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.update-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #d7dfeb;
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #2b79d4, #5da8ff);
+  transition: width 0.18s ease-out;
+}
+
+.update-progress-text {
+  min-width: 45px;
+  text-align: right;
+  color: #3c4e61;
 }
 
 body.fullscreen .top-toolbar,
@@ -328,19 +437,7 @@ body.fullscreen .status-bar {
 }
 
 body.fullscreen .workspace {
-  grid-template-columns: 0 minmax(0, 1fr) 280px;
-}
-
-body.fullscreen .thumb-panel {
-  display: none;
-}
-
-body.fullscreen.hide-search-panel .search-panel {
-  display: none;
-}
-
-body.fullscreen.hide-search-panel .workspace {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  height: 100%;
 }
 
 body.fullscreen .viewer-panel {
@@ -366,6 +463,15 @@ body.dark .search-result-item {
   border-color: #4a5c74;
 }
 
+body.dark .panel-resizer::before {
+  background: #51647f;
+}
+
+body.dark .panel-resizer.active::before,
+body.dark .panel-resizer:hover::before {
+  background: #76a7e7;
+}
+
 body.dark .thumb-item canvas,
 body.dark .page-canvas {
   filter: invert(1) hue-rotate(180deg);
@@ -375,13 +481,96 @@ body.dark .viewer-panel {
   background: #0f1620;
 }
 
-@media (max-width: 1400px) {
-  .workspace {
-    grid-template-columns: 220px minmax(0, 1fr) 250px;
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.modal-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100% - 24px));
+  transform: translate(-50%, -50%);
+  border-radius: 14px;
+  border: 1px solid #c9d4e5;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(5, 18, 39, 0.28);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #d9e2ef;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.select-input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 7px 8px;
+  min-width: 140px;
+}
+
+body.dark .modal-card {
+  background: #1f2937;
+  border-color: #4b5563;
+}
+
+body.dark .modal-head {
+  border-bottom-color: #4b5563;
+}
+
+body.dark .select-input {
+  background: #243246;
+  border-color: #4a5c74;
+  color: #dde6ef;
+}
+
+@media (max-width: 1500px) {
+  .search-group {
+    order: 99;
+    flex: 1 1 100%;
   }
 
-  .search-input {
-    width: 170px;
+  .update-group {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 1180px) {
+  .toolbar-group {
+    flex: 1 1 100%;
   }
 }
 
@@ -389,6 +578,7 @@ body.dark .viewer-panel {
   .top-toolbar,
   .thumb-panel,
   .search-panel,
+  .panel-resizer,
   .status-bar,
   .fullscreen-mini {
     display: none !important;

@@ -1,20 +1,95 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, clipboard } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const { spawnSync } = require("node:child_process");
+const { parseOffice } = require("officeparser");
+const WordExtractor = require("word-extractor");
+const XLSX = require("xlsx");
+const { read: readHwpxDocument } = require("hwpx-js");
 
 let mainWindow = null;
-let pendingPdfToOpen = extractPdfPath(process.argv);
+let pendingDocumentToOpen = null;
 let updateConfig = null;
 let updateDownloaded = false;
+let updateTargetVersion = "";
+let appSettings = { language: "ko" };
+
+const menuText = {
+  ko: {
+    file: "파일",
+    open: "열기...",
+    saveAs: "다른 이름으로 저장...",
+    saveOverwrite: "원본 덮어쓰기 저장",
+    print: "인쇄...",
+    quit: "종료",
+    view: "보기",
+    prevPage: "이전 페이지",
+    nextPage: "다음 페이지",
+    zoomIn: "확대",
+    zoomOut: "축소",
+    zoomReset: "원래 크기",
+    fullscreen: "전체화면",
+    fullscreenMode: "전체화면 보기 모드 전환",
+    thumbToggle: "미리보기 패널 표시/숨김",
+    darkToggle: "다크모드 전환",
+    update: "업데이트",
+    updateCheck: "업데이트 확인",
+    updateInstall: "다운로드된 업데이트 설치"
+  },
+  en: {
+    file: "File",
+    open: "Open...",
+    saveAs: "Save As...",
+    saveOverwrite: "Overwrite Original",
+    print: "Print...",
+    quit: "Quit",
+    view: "View",
+    prevPage: "Previous Page",
+    nextPage: "Next Page",
+    zoomIn: "Zoom In",
+    zoomOut: "Zoom Out",
+    zoomReset: "Actual Size",
+    fullscreen: "Fullscreen",
+    fullscreenMode: "Toggle Fullscreen View Mode",
+    thumbToggle: "Toggle Thumbnails",
+    darkToggle: "Toggle Dark Mode",
+    update: "Update",
+    updateCheck: "Check for Updates",
+    updateInstall: "Install Downloaded Update"
+  }
+};
+
+function mt(key) {
+  const lang = appSettings.language === "en" ? "en" : "ko";
+  return menuText[lang][key] || menuText.ko[key] || key;
+}
+
+const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"]);
+const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"]);
+const HWP_EXTENSIONS = new Set([".hwp", ".hwpx"]);
+pendingDocumentToOpen = extractDocumentPath(process.argv);
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 }
 
-function extractPdfPath(argv) {
+function getFileExtension(filePath) {
+  return path.extname(String(filePath || "")).toLowerCase();
+}
+
+function isSupportedDocumentPath(filePath) {
+  if (!filePath || typeof filePath !== "string") {
+    return false;
+  }
+  const ext = getFileExtension(filePath);
+  return SUPPORTED_DOCUMENT_EXTENSIONS.has(ext) && fs.existsSync(filePath);
+}
+
+function extractDocumentPath(argv) {
   if (!Array.isArray(argv)) {
     return null;
   }
@@ -24,7 +99,7 @@ function extractPdfPath(argv) {
       continue;
     }
     const candidate = arg.replace(/^"+|"+$/g, "");
-    if (candidate.toLowerCase().endsWith(".pdf") && fs.existsSync(candidate)) {
+    if (isSupportedDocumentPath(candidate)) {
       return path.resolve(candidate);
     }
   }
@@ -38,9 +113,9 @@ function sendToRenderer(channel, payload) {
   mainWindow.webContents.send(channel, payload);
 }
 
-function sendPdfToRenderer(filePath) {
+function sendDocumentToRenderer(filePath) {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    pendingPdfToOpen = filePath;
+    pendingDocumentToOpen = filePath;
     return;
   }
   sendToRenderer("system-open-file", filePath);
@@ -62,72 +137,521 @@ function toBuffer(data) {
   throw new Error("저장할 PDF 데이터 형식이 올바르지 않습니다.");
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeForPowerShell(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function readJsonSafe(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getSettingsFilePath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+function loadSettings() {
+  const loaded = readJsonSafe(getSettingsFilePath());
+  if (!loaded || typeof loaded !== "object") {
+    appSettings = { language: "ko" };
+    return;
+  }
+  appSettings = {
+    language: loaded.language === "en" ? "en" : "ko"
+  };
+}
+
+function saveSettings() {
+  try {
+    const settingsPath = getSettingsFilePath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(appSettings, null, 2), "utf8");
+  } catch (_error) {
+    // settings save failure is non-fatal
+  }
+}
+
+function ensureConvertedDir() {
+  const dir = path.join(app.getPath("userData"), "converted-documents");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function createConvertedPdfPath(sourcePath) {
+  const resolved = path.resolve(sourcePath);
+  const stat = fs.statSync(resolved);
+  const ext = getFileExtension(resolved).replace(".", "");
+  const baseName = path.basename(resolved, path.extname(resolved)).replace(/[^\w.\-가-힣]/g, "_").slice(0, 56);
+  const signature = `${resolved}|${stat.mtimeMs}|${stat.size}`;
+  const digest = crypto.createHash("sha1").update(signature).digest("hex").slice(0, 12);
+  return path.join(ensureConvertedDir(), `${baseName}-${ext}-${digest}.pdf`);
+}
+
+function runPowerShell(script, timeoutMs = 180000) {
+  const result = spawnSync(
+    "powershell",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: timeoutMs
+    }
+  );
+  return {
+    ok: result.status === 0 && !result.error,
+    stdout: String(result.stdout || "").trim(),
+    stderr: String(result.stderr || "").trim(),
+    error: result.error ? String(result.error.message || result.error) : ""
+  };
+}
+
+function normalizeText(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim();
+}
+
+function convertWithWordCom(sourcePath, outputPdfPath) {
+  const source = escapeForPowerShell(sourcePath);
+  const output = escapeForPowerShell(outputPdfPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$word = $null",
+    "$doc = $null",
+    "try {",
+    "  $word = New-Object -ComObject Word.Application",
+    "  $word.Visible = $false",
+    "  $doc = $word.Documents.Open(" + source + ", $false, $true)",
+    "  $doc.ExportAsFixedFormat(" + output + ", 17)",
+    "} finally {",
+    "  if ($doc -ne $null) { $doc.Close($false) | Out-Null }",
+    "  if ($word -ne $null) { $word.Quit() | Out-Null }",
+    "}",
+    "if (-not (Test-Path " + output + ")) { throw 'word_export_failed' }"
+  ].join("; ");
+
+  return runPowerShell(script);
+}
+
+function convertWithExcelCom(sourcePath, outputPdfPath) {
+  const source = escapeForPowerShell(sourcePath);
+  const output = escapeForPowerShell(outputPdfPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$excel = $null",
+    "$workbook = $null",
+    "try {",
+    "  $excel = New-Object -ComObject Excel.Application",
+    "  $excel.Visible = $false",
+    "  $excel.DisplayAlerts = $false",
+    "  $workbook = $excel.Workbooks.Open(" + source + ", $null, $true)",
+    "  $workbook.ExportAsFixedFormat(0, " + output + ")",
+    "} finally {",
+    "  if ($workbook -ne $null) { $workbook.Close($false) | Out-Null }",
+    "  if ($excel -ne $null) { $excel.Quit() | Out-Null }",
+    "}",
+    "if (-not (Test-Path " + output + ")) { throw 'excel_export_failed' }"
+  ].join("; ");
+
+  return runPowerShell(script);
+}
+
+function convertWithHancomCom(sourcePath, outputPdfPath) {
+  const source = escapeForPowerShell(sourcePath);
+  const output = escapeForPowerShell(outputPdfPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$hwp = $null",
+    "try {",
+    "  $hwp = New-Object -ComObject HWPFrame.HwpObject",
+    "  try { $hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') | Out-Null } catch {}",
+    "  $hwp.XHwpWindows.Item(0).Visible = $false",
+    "  $opened = $hwp.Open(" + source + ")",
+    "  if (-not $opened) { throw 'hwp_open_failed' }",
+    "  $saved = $hwp.SaveAs(" + output + ", 'PDF')",
+    "  if (-not $saved) { throw 'hwp_save_failed' }",
+    "} finally {",
+    "  if ($hwp -ne $null) { try { $hwp.Quit() | Out-Null } catch {} }",
+    "}",
+    "if (-not (Test-Path " + output + ")) { throw 'hwp_export_failed' }"
+  ].join("; ");
+  return runPowerShell(script);
+}
+
+async function extractWordLegacyText(filePath) {
+  const extractor = new WordExtractor();
+  const document = await extractor.extract(filePath);
+  return normalizeText(document?.getBody?.() || "");
+}
+
+async function extractOfficeAstText(filePath) {
+  try {
+    const ast = await parseOffice(filePath, { outputErrorToConsole: false });
+    if (!ast) {
+      return "";
+    }
+    if (typeof ast.toText === "function") {
+      return normalizeText(ast.toText());
+    }
+    if (typeof ast === "string") {
+      return normalizeText(ast);
+    }
+    return normalizeText(ast.text || "");
+  } catch (_error) {
+    return "";
+  }
+}
+
+function extractSpreadsheetText(filePath) {
+  const workbook = XLSX.readFile(filePath, { cellDates: false, dense: true });
+  const sections = [];
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) {
+      continue;
+    }
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    const rowText = rows
+      .map((row) =>
+        Array.isArray(row)
+          ? row
+              .map((cell) => String(cell ?? "").trim())
+              .filter(Boolean)
+              .join(" | ")
+          : ""
+      )
+      .filter(Boolean)
+      .join("\n");
+    if (rowText) {
+      sections.push(`[${sheetName}]\n${rowText}`);
+    }
+  }
+  return normalizeText(sections.join("\n\n"));
+}
+
+function extractHwpxRunsText(runs) {
+  if (!Array.isArray(runs)) {
+    return "";
+  }
+  const parts = [];
+  for (const run of runs) {
+    if (!run || typeof run !== "object") {
+      continue;
+    }
+    if (run.t === "text" && run.text) {
+      parts.push(String(run.text));
+      continue;
+    }
+    if (Array.isArray(run.rows)) {
+      for (const row of run.rows) {
+        if (!Array.isArray(row?.cells)) {
+          continue;
+        }
+        const cellText = row.cells
+          .map((cell) => extractHwpxRunsText(cell?.runs || []))
+          .filter(Boolean)
+          .join(" | ");
+        if (cellText) {
+          parts.push(cellText);
+        }
+      }
+      continue;
+    }
+    if (run.caption) {
+      parts.push(String(run.caption));
+    }
+  }
+  return parts.join(" ");
+}
+
+function extractHwpFamilyText(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath);
+    const document = readHwpxDocument(new Uint8Array(raw));
+    const blocks = [];
+    const sections = Array.isArray(document?.sections) ? document.sections : [];
+    for (const section of sections) {
+      const paragraphs = Array.isArray(section?.paragraphs) ? section.paragraphs : [];
+      for (const para of paragraphs) {
+        const line = extractHwpxRunsText(para?.runs || []);
+        if (line) {
+          blocks.push(line);
+        }
+      }
+    }
+    return normalizeText(blocks.join("\n"));
+  } catch (_error) {
+    return "";
+  }
+}
+
+function buildFallbackHtml({ sourcePath, sourceExt, contentText, warningMessage }) {
+  const safeTitle = escapeHtml(path.basename(sourcePath));
+  const safeExt = escapeHtml(sourceExt.replace(".", "").toUpperCase());
+  const safeBody = escapeHtml(contentText || "(문서 내용을 추출하지 못했습니다.)");
+  const warning = warningMessage
+    ? `<div class="warning">${escapeHtml(warningMessage)}</div>`
+    : "";
+
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { size: A4; margin: 18mm; }
+    html, body { margin: 0; padding: 0; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; color: #111827; }
+    .head { margin-bottom: 14px; border-bottom: 1px solid #cbd5e1; padding-bottom: 10px; }
+    .title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+    .meta { font-size: 12px; color: #475569; }
+    .warning { margin: 10px 0 14px; padding: 8px 10px; border: 1px solid #f2d6a8; background: #fff7ea; color: #9a5f08; font-size: 12px; border-radius: 6px; }
+    pre { white-space: pre-wrap; word-break: break-word; line-height: 1.45; font-size: 12px; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <p class="title">${safeTitle}</p>
+    <div class="meta">원본 형식: ${safeExt} · lookup 임시 변환 문서</div>
+  </div>
+  ${warning}
+  <pre>${safeBody}</pre>
+</body>
+</html>`;
+}
+
+async function htmlToPdfBuffer(html) {
+  const tempWindow = new BrowserWindow({
+    show: false,
+    width: 1040,
+    height: 1440,
+    autoHideMenuBar: true,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  try {
+    await tempWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return await tempWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: "A4",
+      preferCSSPageSize: true
+    });
+  } finally {
+    if (!tempWindow.isDestroyed()) {
+      tempWindow.close();
+    }
+  }
+}
+
+async function extractDocumentTextForFallback(filePath, ext) {
+  if (ext === ".doc") {
+    const legacyText = await extractWordLegacyText(filePath);
+    if (legacyText) {
+      return legacyText;
+    }
+    return extractOfficeAstText(filePath);
+  }
+  if (ext === ".docx") {
+    return extractOfficeAstText(filePath);
+  }
+  if (ext === ".xls" || ext === ".xlsx") {
+    const fromSheet = extractSpreadsheetText(filePath);
+    if (fromSheet) {
+      return fromSheet;
+    }
+    return extractOfficeAstText(filePath);
+  }
+  if (HWP_EXTENSIONS.has(ext)) {
+    return extractHwpFamilyText(filePath);
+  }
+  return "";
+}
+
+async function convertOfficeFileToPdf(sourcePath, outputPdfPath, ext) {
+  if (ext === ".doc" || ext === ".docx") {
+    return convertWithWordCom(sourcePath, outputPdfPath);
+  }
+  if (ext === ".xls" || ext === ".xlsx") {
+    return convertWithExcelCom(sourcePath, outputPdfPath);
+  }
+  return { ok: false, stderr: "unsupported_office_ext" };
+}
+
+async function convertDocumentToPdf(sourcePath) {
+  if (typeof sourcePath !== "string" || !sourcePath.trim()) {
+    throw new Error("파일 경로가 올바르지 않습니다.");
+  }
+
+  const resolved = path.resolve(sourcePath);
+  const ext = getFileExtension(resolved);
+  if (!SUPPORTED_DOCUMENT_EXTENSIONS.has(ext)) {
+    throw new Error("지원하지 않는 파일 형식입니다.");
+  }
+
+  const stat = await fsp.stat(resolved);
+  if (!stat.isFile()) {
+    throw new Error("파일이 존재하지 않습니다.");
+  }
+
+  if (ext === ".pdf") {
+    return {
+      sourcePath: resolved,
+      sourceExt: ext,
+      converted: false,
+      convertMode: "native",
+      warningMessage: "",
+      pdfPath: resolved,
+      pdfBuffer: await fsp.readFile(resolved)
+    };
+  }
+
+  const targetPdfPath = createConvertedPdfPath(resolved);
+  if (fs.existsSync(targetPdfPath)) {
+    return {
+      sourcePath: resolved,
+      sourceExt: ext,
+      converted: true,
+      convertMode: "cache",
+      warningMessage: "",
+      pdfPath: targetPdfPath,
+      pdfBuffer: await fsp.readFile(targetPdfPath)
+    };
+  }
+
+  let warningMessage = "";
+  if (OFFICE_EXTENSIONS.has(ext)) {
+    const officeResult = await convertOfficeFileToPdf(resolved, targetPdfPath, ext);
+    if (officeResult.ok && fs.existsSync(targetPdfPath)) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "office",
+        warningMessage: "",
+        pdfPath: targetPdfPath,
+        pdfBuffer: await fsp.readFile(targetPdfPath)
+      };
+    }
+    warningMessage = "고품질 변환 엔진을 찾지 못해 읽기 전용 모드로 변환했습니다.";
+  } else if (HWP_EXTENSIONS.has(ext)) {
+    const hwpResult = convertWithHancomCom(resolved, targetPdfPath);
+    if (hwpResult.ok && fs.existsSync(targetPdfPath)) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "hwp-layout",
+        warningMessage: "",
+        pdfPath: targetPdfPath,
+        pdfBuffer: await fsp.readFile(targetPdfPath)
+      };
+    }
+    warningMessage = "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+  }
+
+  const extractedText = await extractDocumentTextForFallback(resolved, ext);
+  const html = buildFallbackHtml({
+    sourcePath: resolved,
+    sourceExt: ext,
+    contentText: extractedText,
+    warningMessage
+  });
+  const fallbackPdf = await htmlToPdfBuffer(html);
+  await fsp.writeFile(targetPdfPath, fallbackPdf);
+
+  return {
+    sourcePath: resolved,
+    sourceExt: ext,
+    converted: true,
+    convertMode: "fallback",
+    warningMessage,
+    pdfPath: targetPdfPath,
+    pdfBuffer: fallbackPdf
+  };
+}
+
 function createMenu() {
   const template = [
     {
-      label: "파일",
+      label: mt("file"),
       submenu: [
         {
-          label: "열기...",
+          label: mt("open"),
           accelerator: "Ctrl+O",
           click: () => sendToRenderer("menu-action", "open-file")
         },
         {
-          label: "다른 이름으로 저장...",
+          label: mt("saveAs"),
           accelerator: "Ctrl+Shift+S",
           click: () => sendToRenderer("menu-action", "save-as")
         },
         {
-          label: "원본 덮어쓰기 저장",
+          label: mt("saveOverwrite"),
           accelerator: "Ctrl+S",
           click: () => sendToRenderer("menu-action", "save-overwrite")
         },
         { type: "separator" },
         {
-          label: "인쇄...",
+          label: mt("print"),
           accelerator: "Ctrl+P",
           click: () => sendToRenderer("menu-action", "print")
         },
         { type: "separator" },
         {
-          label: "종료",
+          label: mt("quit"),
           accelerator: "Alt+F4",
           click: () => app.quit()
         }
       ]
     },
     {
-      label: "보기",
+      label: mt("view"),
       submenu: [
         {
-          label: "이전 페이지",
+          label: mt("prevPage"),
           accelerator: "PageUp",
           click: () => sendToRenderer("menu-action", "prev-page")
         },
         {
-          label: "다음 페이지",
+          label: mt("nextPage"),
           accelerator: "PageDown",
           click: () => sendToRenderer("menu-action", "next-page")
         },
         { type: "separator" },
         {
-          label: "확대",
+          label: mt("zoomIn"),
           accelerator: "Ctrl+=",
           click: () => sendToRenderer("menu-action", "zoom-in")
         },
         {
-          label: "축소",
+          label: mt("zoomOut"),
           accelerator: "Ctrl+-",
           click: () => sendToRenderer("menu-action", "zoom-out")
         },
         {
-          label: "원래 크기",
+          label: mt("zoomReset"),
           accelerator: "Ctrl+0",
           click: () => sendToRenderer("menu-action", "zoom-reset")
         },
         { type: "separator" },
         {
-          label: "전체화면",
+          label: mt("fullscreen"),
           accelerator: "F11",
           click: () => {
             if (!mainWindow) {
@@ -137,32 +661,32 @@ function createMenu() {
           }
         },
         {
-          label: "전체화면 보기 모드 전환",
+          label: mt("fullscreenMode"),
           accelerator: "Ctrl+Shift+F",
           click: () => sendToRenderer("menu-action", "toggle-fullscreen-view-mode")
         },
         {
-          label: "미리보기 패널 표시/숨김",
+          label: mt("thumbToggle"),
           accelerator: "Ctrl+B",
           click: () => sendToRenderer("menu-action", "toggle-thumb-panel")
         },
         { type: "separator" },
         {
-          label: "다크모드 전환",
+          label: mt("darkToggle"),
           accelerator: "Ctrl+D",
           click: () => sendToRenderer("menu-action", "toggle-dark")
         }
       ]
     },
     {
-      label: "업데이트",
+      label: mt("update"),
       submenu: [
         {
-          label: "업데이트 확인",
+          label: mt("updateCheck"),
           click: () => sendToRenderer("menu-action", "check-update")
         },
         {
-          label: "다운로드된 업데이트 설치",
+          label: mt("updateInstall"),
           click: () => sendToRenderer("menu-action", "install-update")
         }
       ]
@@ -198,9 +722,9 @@ function createWindow() {
   });
 
   mainWindow.webContents.on("did-finish-load", () => {
-    if (pendingPdfToOpen) {
-      sendToRenderer("system-open-file", pendingPdfToOpen);
-      pendingPdfToOpen = null;
+    if (pendingDocumentToOpen) {
+      sendToRenderer("system-open-file", pendingDocumentToOpen);
+      pendingDocumentToOpen = null;
     }
     sendToRenderer("window-fullscreen-changed", mainWindow?.isFullScreen() ?? false);
   });
@@ -212,6 +736,33 @@ function createWindow() {
   mainWindow.on("leave-full-screen", () => {
     sendToRenderer("window-fullscreen-changed", false);
   });
+}
+
+function parseGitHubRepoFromUrl(url) {
+  const text = String(url || "").trim();
+  if (!text) {
+    return null;
+  }
+  const match = text.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  if (!match) {
+    return null;
+  }
+  return { owner: match[1], repo: match[2] };
+}
+
+function extractRepoFromPackageJson() {
+  const pkgPath = path.join(__dirname, "package.json");
+  const pkg = readJsonSafe(pkgPath);
+  if (!pkg) {
+    return null;
+  }
+  if (typeof pkg.repository === "string") {
+    return parseGitHubRepoFromUrl(pkg.repository);
+  }
+  if (pkg.repository && typeof pkg.repository.url === "string") {
+    return parseGitHubRepoFromUrl(pkg.repository.url);
+  }
+  return null;
 }
 
 function loadUpdateConfig() {
@@ -238,22 +789,33 @@ function loadUpdateConfig() {
       if (owner && repo) {
         return { owner, repo };
       }
+      const fromUrl = parseGitHubRepoFromUrl(parsed.repository || parsed.repoUrl || "");
+      if (fromUrl) {
+        return fromUrl;
+      }
     } catch (_error) {
       // ignore and try next file
     }
   }
 
-  return null;
+  return extractRepoFromPackageJson();
 }
 
 function sendUpdateStatus(status, extra = {}) {
-  sendToRenderer("update-status", { status, ...extra });
+  sendToRenderer("update-status", {
+    status,
+    stage: extra.stage || status,
+    currentVersion: app.getVersion(),
+    targetVersion: extra.targetVersion || updateTargetVersion || "",
+    ...extra
+  });
 }
 
 function setupAutoUpdater() {
   updateConfig = loadUpdateConfig();
   if (!updateConfig) {
     sendUpdateStatus("disabled", {
+      stage: "disabled",
       message: "업데이트 설정이 없습니다. update-config.json에 owner/repo를 입력해 주세요."
     });
     return;
@@ -272,53 +834,90 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("checking-for-update", () => {
-    sendUpdateStatus("checking", { message: "업데이트를 확인하고 있습니다." });
+    sendUpdateStatus("checking", { stage: "checking", message: "업데이트 확인중..." });
   });
 
   autoUpdater.on("update-available", (info) => {
+    updateTargetVersion = String(info?.version || "");
     sendUpdateStatus("available", {
-      message: `새 버전 ${info.version}을 찾았습니다. 다운로드를 시작합니다.`,
-      version: info.version
+      stage: "downloading",
+      targetVersion: updateTargetVersion,
+      percent: 0,
+      message: `새 버전 v${updateTargetVersion}을 찾았습니다. 다운로드를 시작합니다.`
     });
   });
 
   autoUpdater.on("update-not-available", () => {
-    sendUpdateStatus("not-available", { message: "현재 최신 버전입니다." });
+    updateTargetVersion = "";
+    sendUpdateStatus("not-available", { stage: "idle", percent: 100, message: "현재 최신 버전입니다." });
   });
 
   autoUpdater.on("download-progress", (progress) => {
+    const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
     sendUpdateStatus("downloading", {
-      message: `업데이트 다운로드 중... ${Math.round(progress.percent || 0)}%`,
-      percent: progress.percent || 0
+      stage: "downloading",
+      targetVersion: updateTargetVersion,
+      message: `업데이트 다운로드중... ${Math.round(percent)}%`,
+      percent
     });
   });
 
   autoUpdater.on("update-downloaded", (info) => {
     updateDownloaded = true;
+    updateTargetVersion = String(info?.version || updateTargetVersion || "");
     sendUpdateStatus("downloaded", {
-      message: `업데이트 ${info.version} 다운로드 완료. 다시 시작하면 설치됩니다.`,
-      version: info.version
+      stage: "ready-to-install",
+      targetVersion: updateTargetVersion,
+      percent: 100,
+      message: `업데이트 v${updateTargetVersion} 다운로드 완료. 잠시 후 설치를 시작합니다.`
     });
+
+    if (app.isPackaged) {
+      setTimeout(() => {
+        sendUpdateStatus("installing", {
+          stage: "installing",
+          targetVersion: updateTargetVersion,
+          percent: 100,
+          message: "재시작하여 업데이트를 설치합니다..."
+        });
+        autoUpdater.quitAndInstall(false, true);
+      }, 1500);
+    }
   });
 
   autoUpdater.on("error", (error) => {
     sendUpdateStatus("error", {
+      stage: "error",
       message: `업데이트 오류: ${error?.message || "알 수 없는 오류"}`
     });
   });
 }
 
-ipcMain.handle("dialog:open-pdf", async () => {
+async function showOpenDocumentDialog() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "PDF 파일 열기",
+    title: "문서 열기",
     properties: ["openFile"],
-    filters: [{ name: "PDF 문서", extensions: ["pdf"] }]
+    filters: [
+      { name: "지원 문서", extensions: ["pdf", "hwp", "hwpx", "doc", "docx", "xls", "xlsx"] },
+      { name: "PDF 문서", extensions: ["pdf"] },
+      { name: "한글 문서", extensions: ["hwp", "hwpx"] },
+      { name: "워드 문서", extensions: ["doc", "docx"] },
+      { name: "엑셀 문서", extensions: ["xls", "xlsx"] }
+    ]
   });
 
   if (result.canceled || result.filePaths.length === 0) {
     return null;
   }
   return result.filePaths[0];
+}
+
+ipcMain.handle("dialog:open-document", async () => {
+  return showOpenDocumentDialog();
+});
+
+ipcMain.handle("dialog:open-pdf", async () => {
+  return showOpenDocumentDialog();
 });
 
 ipcMain.handle("dialog:save-pdf", async (_event, options = {}) => {
@@ -352,17 +951,56 @@ ipcMain.handle("pdf:read-file", async (_event, filePath) => {
     throw new Error("파일 경로가 올바르지 않습니다.");
   }
 
-  const resolved = path.resolve(filePath);
-  if (path.extname(resolved).toLowerCase() !== ".pdf") {
-    throw new Error("PDF 파일만 열 수 있습니다.");
-  }
+  const converted = await convertDocumentToPdf(filePath);
+  return converted.pdfBuffer;
+});
 
-  const stat = await fsp.stat(resolved);
-  if (!stat.isFile()) {
-    throw new Error("파일이 존재하지 않습니다.");
-  }
+ipcMain.handle("document:open", async (_event, filePath) => {
+  const converted = await convertDocumentToPdf(filePath);
+  return {
+    sourcePath: converted.sourcePath,
+    sourceExt: converted.sourceExt,
+    converted: converted.converted,
+    convertMode: converted.convertMode,
+    warningMessage: converted.warningMessage,
+    pdfPath: converted.pdfPath,
+    data: converted.pdfBuffer
+  };
+});
 
-  return fsp.readFile(resolved);
+ipcMain.handle("document:convert", async (_event, filePath) => {
+  const converted = await convertDocumentToPdf(filePath);
+  return {
+    sourcePath: converted.sourcePath,
+    sourceExt: converted.sourceExt,
+    converted: converted.converted,
+    convertMode: converted.convertMode,
+    warningMessage: converted.warningMessage,
+    pdfPath: converted.pdfPath
+  };
+});
+
+ipcMain.handle("document:is-supported", async (_event, filePath) => {
+  if (!filePath || typeof filePath !== "string") {
+    return false;
+  }
+  return SUPPORTED_DOCUMENT_EXTENSIONS.has(getFileExtension(filePath));
+});
+
+ipcMain.handle("clipboard:copy-text", async (_event, text) => {
+  clipboard.writeText(String(text || ""));
+  return true;
+});
+
+ipcMain.handle("settings:get", async () => {
+  return { language: appSettings.language };
+});
+
+ipcMain.handle("settings:set-language", async (_event, language) => {
+  appSettings.language = language === "en" ? "en" : "ko";
+  saveSettings();
+  createMenu();
+  return { language: appSettings.language };
 });
 
 ipcMain.handle("pdf:write-file", async (_event, payload) => {
@@ -428,6 +1066,12 @@ ipcMain.handle("update:install-now", async () => {
     return { ok: false, message: "다운로드된 업데이트가 없습니다." };
   }
   setImmediate(() => {
+    sendUpdateStatus("installing", {
+      stage: "installing",
+      targetVersion: updateTargetVersion,
+      percent: 100,
+      message: "재시작하여 업데이트를 설치합니다..."
+    });
     autoUpdater.quitAndInstall(false, true);
   });
   return { ok: true };
@@ -437,12 +1081,15 @@ ipcMain.handle("update:get-config", async () => {
   return {
     enabled: Boolean(updateConfig),
     owner: updateConfig?.owner || "",
-    repo: updateConfig?.repo || ""
+    repo: updateConfig?.repo || "",
+    currentVersion: app.getVersion(),
+    targetVersion: updateTargetVersion || ""
   };
 });
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
+    loadSettings();
     createMenu();
     createWindow();
     setupAutoUpdater();
@@ -463,7 +1110,7 @@ if (gotSingleInstanceLock) {
   });
 
   app.on("second-instance", (_event, argv) => {
-    const incomingFile = extractPdfPath(argv);
+    const incomingFile = extractDocumentPath(argv);
     if (mainWindow) {
       if (mainWindow.isMinimized()) {
         mainWindow.restore();
@@ -471,14 +1118,14 @@ if (gotSingleInstanceLock) {
       mainWindow.focus();
     }
     if (incomingFile) {
-      sendPdfToRenderer(incomingFile);
+      sendDocumentToRenderer(incomingFile);
     }
   });
 
   app.on("open-file", (event, filePath) => {
     event.preventDefault();
-    if (filePath.toLowerCase().endsWith(".pdf")) {
-      sendPdfToRenderer(path.resolve(filePath));
+    if (isSupportedDocumentPath(filePath)) {
+      sendDocumentToRenderer(path.resolve(filePath));
     }
   });
 

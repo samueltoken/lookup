@@ -1,22 +1,39 @@
-# lookup (윈도우 PDF 뷰어)
+# lookup
 
-로그인/결제 없이 로컬 PDF만 바로 열어보는 데스크톱 앱입니다.
+로그인/결제 없이 바로 쓰는 Windows 문서 뷰어입니다.
 
-## 핵심 기능
+## 지원 형식
 
-- 파일 열기 (`lookup.exe [PDF경로]` 지원)
-- 왼쪽 미리보기 썸네일
-- 연속 스크롤 보기 (기본)
-- 확대/축소 (`Ctrl + 마우스 휠` 포함)
-- 텍스트 검색 + 노란 하이라이트
-- 페이지 회전/삭제/순서 변경(드래그)
-- 주석(형광펜/펜/텍스트 메모)
-- 저장: 다른 이름 저장 / 원본 덮어쓰기
-- 전체화면 (`F11`) + 보기 모드 전환
-- 인쇄 (`Ctrl+P`)
-- 다크모드
+- `.pdf`
+- `.hwp`, `.hwpx`
+- `.doc`, `.docx`
+- `.xls`, `.xlsx`
 
-## 설치 파일 만들기
+비-PDF 문서는 앱 내부에서 PDF로 임시 변환해 표시합니다.  
+원본 파일은 수정하지 않습니다.
+
+## 주요 기능
+
+- 파일 열기: `lookup.exe [문서 경로]`
+- 연속 스크롤 + 썸네일 패널
+- `Ctrl + 마우스 휠` 부드러운 확대/축소
+- 검색 결과 목록 + 단어 위치 하이라이트
+- 주석(형광펜/펜/텍스트 메모), 페이지 삭제/회전/순서 변경
+- 전체화면(`F11`) + 연속/현재페이지 모드 전환
+- 인쇄(`Ctrl+P`)
+- 설정 모달:
+  - 한국어/영어 전환
+  - 개발자 문의 이메일 복사
+- GitHub Release 기반 자동 업데이트(진행률 표시)
+
+## 개발 실행
+
+```bash
+npm install
+npm start
+```
+
+## 설치 파일 빌드
 
 ```bash
 npm install
@@ -25,13 +42,24 @@ npm run dist
 
 생성 파일:
 
-- `release/lookup-Setup-1.1.0.exe`
+- `release/lookup-Setup-x.y.z.exe`
+- `release/latest.yml`
+- `release/*.blockmap`
 
-설치 중에 `.pdf 파일을 lookup으로 열기` 체크를 선택하면 더블클릭 연결이 설정됩니다.
+## 자동 업데이트 설정
 
-## 개발 실행
+`update-config.json`에 저장소 정보를 넣으면 GitHub Release로 업데이트를 확인합니다.
 
-```bash
-npm install
-npm start
+```json
+{
+  "owner": "깃허브아이디",
+  "repo": "저장소이름"
+}
 ```
+
+비워 두면 `package.json`의 `repository` URL에서 자동 추론합니다.
+
+## 제거(언인스톨)
+
+- Windows 설정 > 앱 > 설치된 앱 > `lookup` 제거
+- 또는 시작 메뉴의 `lookup Uninstall` 실행
