@@ -1,0 +1,71 @@
+{
+  "name": "lookup",
+  "version": "1.1.0",
+  "description": "로그인 없이 바로 쓰는 윈도우 PDF 뷰어",
+  "main": "main.js",
+  "scripts": {
+    "build:icon": "node scripts/generate-eye-icon.mjs",
+    "start": "npm run build:icon && electron .",
+    "dist": "npm run build:icon && electron-builder --win nsis --publish never && node scripts/generate-latest-yml.mjs",
+    "pack": "npm run build:icon && electron-builder --dir"
+  },
+  "keywords": [
+    "pdf",
+    "viewer",
+    "electron"
+  ],
+  "author": "lookup",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.6.205"
+  },
+  "devDependencies": {
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "pngjs": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.lookup.pdfviewer",
+    "productName": "lookup",
+    "artifactName": "lookup-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "update-config.json",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "lookup",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    }
+  }
+}
