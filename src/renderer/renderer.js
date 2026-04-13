@@ -7,10 +7,138 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
+const storage = {
+  darkMode: "lookup-dark-mode",
+  language: "lookup-language",
+  fullscreenMode: "lookup-fullscreen-view-mode",
+  leftPanelWidth: "lookup-left-panel-width",
+  rightPanelWidth: "lookup-right-panel-width",
+  leftPanelVisible: "lookup-left-panel-visible",
+  rightPanelVisible: "lookup-right-panel-visible"
+};
+
+function getStoredNumber(key, fallback) {
+  const raw = Number.parseFloat(localStorage.getItem(key) || "");
+  return Number.isFinite(raw) ? raw : fallback;
+}
+
+function getStoredBool(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (raw === "1") {
+    return true;
+  }
+  if (raw === "0") {
+    return false;
+  }
+  return fallback;
+}
+
+const i18n = {
+  ko: {
+    open: "열기",
+    saveAs: "다른 이름 저장",
+    saveOverwrite: "덮어쓰기",
+    prev: "이전",
+    next: "다음",
+    zoomReset: "원래 크기",
+    rotateLeft: "왼쪽 회전",
+    rotateRight: "오른쪽 회전",
+    deletePage: "페이지 삭제",
+    modeView: "보기",
+    modeHighlight: "형광펜",
+    modePen: "펜",
+    modeText: "텍스트 메모",
+    thumbToggleShow: "미리보기 표시",
+    thumbToggleHide: "미리보기 숨기기",
+    searchPanelToggleShow: "검색 패널 표시",
+    searchPanelToggleHide: "검색 패널 숨기기",
+    fullscreen: "전체화면",
+    fullscreenExit: "전체화면 종료",
+    darkMode: "다크모드",
+    lightMode: "라이트모드",
+    searchPlaceholder: "문서 검색",
+    search: "검색",
+    prevHit: "이전 결과",
+    nextHit: "다음 결과",
+    checkUpdate: "업데이트 확인",
+    installUpdate: "지금 설치",
+    thumbPanelTitle: "미리보기 (드래그로 순서 변경)",
+    dropHint: "문서를 끌어놓거나 열기 버튼을 눌러 주세요.",
+    fullscreenModeContinuous: "전체화면: 연속 스크롤",
+    fullscreenModeSingle: "전체화면: 현재 페이지",
+    searchResults: "검색 결과",
+    settingsTitle: "설정",
+    languageLabel: "언어",
+    contactDeveloper: "개발자 문의 (이메일 복사)",
+    copiedContact: "개발자 이메일이 복사되었습니다.",
+    versionCurrent: "현재 버전",
+    versionTarget: "대상 버전",
+    searchCount: "결과 {count}개",
+    searchPanelCount: "{count}건",
+    pageLabel: "페이지",
+    updateReady: "업데이트 연동 준비됨",
+    updateDisabled: "업데이트 비활성: 저장소 설정을 찾지 못했습니다."
+  },
+  en: {
+    open: "Open",
+    saveAs: "Save As",
+    saveOverwrite: "Overwrite",
+    prev: "Prev",
+    next: "Next",
+    zoomReset: "Reset",
+    rotateLeft: "Rotate Left",
+    rotateRight: "Rotate Right",
+    deletePage: "Delete Page",
+    modeView: "View",
+    modeHighlight: "Highlight",
+    modePen: "Pen",
+    modeText: "Text Note",
+    thumbToggleShow: "Show Thumbnails",
+    thumbToggleHide: "Hide Thumbnails",
+    searchPanelToggleShow: "Show Search Panel",
+    searchPanelToggleHide: "Hide Search Panel",
+    fullscreen: "Fullscreen",
+    fullscreenExit: "Exit Fullscreen",
+    darkMode: "Dark Mode",
+    lightMode: "Light Mode",
+    searchPlaceholder: "Search document",
+    search: "Search",
+    prevHit: "Prev Hit",
+    nextHit: "Next Hit",
+    checkUpdate: "Check Update",
+    installUpdate: "Install Now",
+    thumbPanelTitle: "Thumbnails (drag to reorder)",
+    dropHint: "Drop a document or click Open.",
+    fullscreenModeContinuous: "Fullscreen: Continuous",
+    fullscreenModeSingle: "Fullscreen: Single Page",
+    searchResults: "Search Results",
+    settingsTitle: "Settings",
+    languageLabel: "Language",
+    contactDeveloper: "Contact Developer (copy email)",
+    copiedContact: "Developer email copied to clipboard.",
+    versionCurrent: "Current Version",
+    versionTarget: "Target Version",
+    searchCount: "Results {count}",
+    searchPanelCount: "{count} items",
+    pageLabel: "page",
+    updateReady: "Update connected",
+    updateDisabled: "Update disabled: repository info not found."
+  }
+};
+
+function t(key, vars = {}) {
+  const dict = i18n[state.language] || i18n.ko;
+  const template = dict[key] || i18n.ko[key] || key;
+  return template.replace(/\{(\w+)\}/g, (_all, name) => String(vars[name] ?? ""));
+}
+
 const state = {
   pdfDoc: null,
   sourceBytes: null,
   filePath: "",
+  sourceExt: ".pdf",
+  sourceConverted: false,
+  sourceConvertMode: "native",
   pageOrder: [],
   pageCache: new Map(),
   pageViews: new Map(),
@@ -30,17 +158,35 @@ const state = {
   renderVersion: 0,
   thumbRenderVersion: 0,
   isFullScreen: false,
-  fullScreenViewMode: localStorage.getItem("lookup-fullscreen-view-mode") || "continuous",
-  thumbPanelVisible: true,
+  fullScreenViewMode: localStorage.getItem(storage.fullscreenMode) || "continuous",
+  thumbPanelVisible: getStoredBool(storage.leftPanelVisible, true),
+  searchPanelVisible: getStoredBool(storage.rightPanelVisible, false),
   fullscreenThumbVisible: false,
+  fullscreenSearchVisible: false,
   scrollRaf: 0,
   saveDirty: false,
-  wheelZoomBusy: false,
-  mainRenderQuality: 1.35,
-  thumbRenderQuality: 2
+  wheelZoomRaf: 0,
+  wheelZoomApplying: false,
+  wheelZoomDelta: 0,
+  wheelZoomAnchor: null,
+  mainRenderQuality: 1.75,
+  thumbRenderQuality: 2.6,
+  leftPanelWidth: clamp(getStoredNumber(storage.leftPanelWidth, 250), 180, 560),
+  rightPanelWidth: clamp(getStoredNumber(storage.rightPanelWidth, 280), 220, 620),
+  activeResizer: null,
+  fullRenderPassVersion: 0,
+  fullRenderTimer: 0,
+  layoutRecoveryTimer: 0,
+  appVersion: "",
+  updateTargetVersion: "",
+  language: localStorage.getItem(storage.language) === "en" ? "en" : "ko",
+  applyingLanguage: false,
+  pendingZoomJob: null,
+  zoomJobRunning: false
 };
 
 const els = {
+  workspace: document.getElementById("workspace"),
   openFileBtn: document.getElementById("openFileBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
   saveOverwriteBtn: document.getElementById("saveOverwriteBtn"),
@@ -62,11 +208,15 @@ const els = {
   searchPrevBtn: document.getElementById("searchPrevBtn"),
   searchNextBtn: document.getElementById("searchNextBtn"),
   searchCountLabel: document.getElementById("searchCountLabel"),
+  toggleThumbPanelBtn: document.getElementById("toggleThumbPanelBtn"),
+  toggleSearchPanelBtn: document.getElementById("toggleSearchPanelBtn"),
   toggleFullscreenBtn: document.getElementById("toggleFullscreenBtn"),
   toggleDarkBtn: document.getElementById("toggleDarkBtn"),
   checkUpdateBtn: document.getElementById("checkUpdateBtn"),
   installUpdateBtn: document.getElementById("installUpdateBtn"),
   thumbPanel: document.getElementById("thumbPanel"),
+  leftResizer: document.getElementById("leftResizer"),
+  rightResizer: document.getElementById("rightResizer"),
   thumbnailList: document.getElementById("thumbnailList"),
   viewerPanel: document.getElementById("viewerPanel"),
   pagesContainer: document.getElementById("pagesContainer"),
@@ -74,9 +224,23 @@ const els = {
   fullscreenMiniBar: document.getElementById("fullscreenMiniBar"),
   toggleFullscreenViewModeBtn: document.getElementById("toggleFullscreenViewModeBtn"),
   toggleThumbInFullscreenBtn: document.getElementById("toggleThumbInFullscreenBtn"),
+  toggleSearchInFullscreenBtn: document.getElementById("toggleSearchInFullscreenBtn"),
+  searchPanel: document.getElementById("searchPanel"),
   searchPanelCount: document.getElementById("searchPanelCount"),
   searchResultList: document.getElementById("searchResultList"),
-  statusBar: document.getElementById("statusBar")
+  statusBar: document.getElementById("statusBar"),
+  statusText: document.getElementById("statusText"),
+  currentVersionLabel: document.getElementById("currentVersionLabel"),
+  targetVersionLabel: document.getElementById("targetVersionLabel"),
+  updateProgressWrap: document.getElementById("updateProgressWrap"),
+  updateProgressBar: document.getElementById("updateProgressBar"),
+  updateProgressText: document.getElementById("updateProgressText"),
+  settingsBtn: document.getElementById("settingsBtn"),
+  settingsModal: document.getElementById("settingsModal"),
+  closeSettingsBtn: document.getElementById("closeSettingsBtn"),
+  languageSelect: document.getElementById("languageSelect"),
+  contactDeveloperBtn: document.getElementById("contactDeveloperBtn"),
+  settingsMessage: document.getElementById("settingsMessage")
 };
 
 function toUint8Array(raw) {
@@ -96,8 +260,65 @@ function toUint8Array(raw) {
 }
 
 function setStatus(message, isError = false) {
-  els.statusBar.textContent = message;
-  els.statusBar.style.color = isError ? "#d73333" : "";
+  els.statusText.textContent = message;
+  els.statusText.style.color = isError ? "#d73333" : "";
+}
+
+function applyLanguageToStaticTexts() {
+  if (state.applyingLanguage) {
+    return;
+  }
+  state.applyingLanguage = true;
+  try {
+    document.documentElement.lang = state.language;
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (!key) {
+        return;
+      }
+      el.textContent = t(key);
+    });
+    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      const key = el.dataset.i18nPlaceholder;
+      if (!key) {
+        return;
+      }
+      el.setAttribute("placeholder", t(key));
+    });
+    if (els.languageSelect) {
+      els.languageSelect.value = state.language;
+    }
+    if (els.printBtn) {
+      const label = state.language === "en" ? "Print" : "인쇄";
+      els.printBtn.setAttribute("aria-label", label);
+      els.printBtn.setAttribute("title", `${label} (Ctrl+P)`);
+    }
+    if (els.settingsBtn) {
+      const label = state.language === "en" ? "Settings" : "설정";
+      els.settingsBtn.setAttribute("aria-label", label);
+      els.settingsBtn.setAttribute("title", label);
+    }
+    updateSearchCountText();
+    updateVersionLabels();
+    applyPanelLayout();
+    updateFullscreenButtons();
+    updateToolbarState();
+  } finally {
+    state.applyingLanguage = false;
+  }
+}
+
+async function setLanguage(language, persist = true) {
+  state.language = language === "en" ? "en" : "ko";
+  localStorage.setItem(storage.language, state.language);
+  applyLanguageToStaticTexts();
+  if (persist) {
+    try {
+      await window.lookupAPI.setLanguage(state.language);
+    } catch (_error) {
+      // non-fatal
+    }
+  }
 }
 
 function clamp(value, min, max) {
@@ -147,24 +368,70 @@ function getAnnotationBucket(pageNum) {
 
 function setDarkMode(enabled) {
   document.body.classList.toggle("dark", enabled);
-  els.toggleDarkBtn.textContent = enabled ? "라이트모드" : "다크모드";
-  localStorage.setItem("lookup-dark-mode", enabled ? "1" : "0");
+  els.toggleDarkBtn.textContent = enabled ? t("lightMode") : t("darkMode");
+  localStorage.setItem(storage.darkMode, enabled ? "1" : "0");
 }
 
 function applySavedDarkMode() {
-  setDarkMode(localStorage.getItem("lookup-dark-mode") === "1");
+  setDarkMode(localStorage.getItem(storage.darkMode) === "1");
 }
 
-function applyThumbPanelVisibility() {
-  const visible = state.isFullScreen ? state.fullscreenThumbVisible : state.thumbPanelVisible;
-  els.thumbPanel.classList.toggle("hidden", !visible);
-  els.toggleThumbInFullscreenBtn.textContent = visible ? "미리보기 숨김" : "미리보기 표시";
+function persistLayoutState() {
+  localStorage.setItem(storage.leftPanelVisible, state.thumbPanelVisible ? "1" : "0");
+  localStorage.setItem(storage.rightPanelVisible, state.searchPanelVisible ? "1" : "0");
+  localStorage.setItem(storage.leftPanelWidth, String(Math.round(state.leftPanelWidth)));
+  localStorage.setItem(storage.rightPanelWidth, String(Math.round(state.rightPanelWidth)));
+  localStorage.setItem(storage.fullscreenMode, state.fullScreenViewMode);
+}
+
+function getEffectiveLeftPanelVisible() {
+  return state.isFullScreen ? state.fullscreenThumbVisible : state.thumbPanelVisible;
+}
+
+function getEffectiveRightPanelVisible() {
+  return state.isFullScreen ? state.fullscreenSearchVisible : state.searchPanelVisible;
+}
+
+function applyPanelLayout() {
+  const leftVisible = getEffectiveLeftPanelVisible();
+  const rightVisible = getEffectiveRightPanelVisible();
+
+  els.workspace.style.setProperty("--left-panel-width", `${Math.round(state.leftPanelWidth)}px`);
+  els.workspace.style.setProperty("--right-panel-width", `${Math.round(state.rightPanelWidth)}px`);
+  els.workspace.classList.toggle("left-collapsed", !leftVisible);
+  els.workspace.classList.toggle("right-collapsed", !rightVisible);
+
+  els.toggleThumbPanelBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
+  els.toggleSearchPanelBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
+  els.toggleThumbInFullscreenBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
+  els.toggleSearchInFullscreenBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
+}
+
+function showUpdateProgressBar(show) {
+  els.updateProgressWrap.classList.toggle("hidden", !show);
+}
+
+function setUpdateProgress(percent) {
+  const safe = clamp(Math.round(percent), 0, 100);
+  els.updateProgressBar.style.width = `${safe}%`;
+  els.updateProgressText.textContent = `${safe}%`;
+}
+
+function updateVersionLabels(currentVersion = state.appVersion, targetVersion = state.updateTargetVersion) {
+  els.currentVersionLabel.textContent = `${t("versionCurrent")} v${currentVersion || "-"}`;
+  if (targetVersion) {
+    els.targetVersionLabel.classList.remove("hidden");
+    els.targetVersionLabel.textContent = `${t("versionTarget")} v${targetVersion}`;
+  } else {
+    els.targetVersionLabel.classList.add("hidden");
+    els.targetVersionLabel.textContent = `${t("versionTarget")} -`;
+  }
 }
 
 function updateFullscreenButtons() {
-  els.toggleFullscreenBtn.textContent = state.isFullScreen ? "전체화면 종료" : "전체화면";
+  els.toggleFullscreenBtn.textContent = state.isFullScreen ? t("fullscreenExit") : t("fullscreen");
   els.toggleFullscreenViewModeBtn.textContent =
-    state.fullScreenViewMode === "single" ? "전체화면: 현재 페이지" : "전체화면: 연속 스크롤";
+    state.fullScreenViewMode === "single" ? t("fullscreenModeSingle") : t("fullscreenModeContinuous");
 }
 
 function applyPageVisibility() {
@@ -190,7 +457,7 @@ function updateToolbarState() {
   els.rotateRightBtn.disabled = !hasDoc;
   els.deletePageBtn.disabled = !hasDoc || total <= 1;
   els.saveAsBtn.disabled = !hasDoc;
-  els.saveOverwriteBtn.disabled = !hasDoc;
+  els.saveOverwriteBtn.disabled = !hasDoc || state.sourceExt !== ".pdf";
   els.printBtn.disabled = !hasDoc;
   els.searchBtn.disabled = !hasDoc;
   els.searchInput.disabled = !hasDoc;
@@ -204,6 +471,16 @@ function updateToolbarState() {
   updateFullscreenButtons();
 }
 
+function openSettingsModal() {
+  els.settingsModal.classList.remove("hidden");
+  els.settingsMessage.textContent = "";
+  els.languageSelect.value = state.language;
+}
+
+function closeSettingsModal() {
+  els.settingsModal.classList.add("hidden");
+}
+
 function updateActiveThumbnail() {
   for (const [pageNum, thumb] of state.thumbnails.entries()) {
     thumb.classList.toggle("active", pageNum === state.currentPage);
@@ -212,8 +489,8 @@ function updateActiveThumbnail() {
 
 function updateSearchCountText() {
   const count = state.searchMatches.length;
-  els.searchCountLabel.textContent = `결과 ${count}개`;
-  els.searchPanelCount.textContent = `${count}건`;
+  els.searchCountLabel.textContent = t("searchCount", { count });
+  els.searchPanelCount.textContent = t("searchPanelCount", { count });
 }
 
 function updateThumbnailSearchMark() {
@@ -325,17 +602,90 @@ async function renderPage(pageNum) {
   drawSearchHighlightsForPage(pageNum);
 }
 
-async function renderAllPages() {
-  if (!state.pdfDoc) {
-    return;
+function getVisiblePageNumbers() {
+  if (!state.pageOrder.length) {
+    return [];
   }
-  const version = ++state.renderVersion;
+  const viewportTop = els.viewerPanel.scrollTop - 40;
+  const viewportBottom = viewportTop + els.viewerPanel.clientHeight + 80;
+  const visible = [];
   for (const pageNum of state.pageOrder) {
+    const view = state.pageViews.get(pageNum);
+    if (!view || view.wrap.classList.contains("hidden-page")) {
+      continue;
+    }
+    const top = view.wrap.offsetTop;
+    const bottom = top + view.wrap.offsetHeight;
+    if (bottom < viewportTop || top > viewportBottom) {
+      continue;
+    }
+    visible.push(pageNum);
+  }
+  if (visible.length === 0 && state.currentPage) {
+    return [state.currentPage];
+  }
+  return visible;
+}
+
+function buildPriorityRenderOrder() {
+  const visible = getVisiblePageNumbers();
+  const priority = new Set();
+  for (const pageNum of visible) {
+    priority.add(pageNum);
+    const index = state.pageOrder.indexOf(pageNum);
+    if (index > 0) {
+      priority.add(state.pageOrder[index - 1]);
+    }
+    if (index >= 0 && index < state.pageOrder.length - 1) {
+      priority.add(state.pageOrder[index + 1]);
+    }
+  }
+
+  const orderedPriority = state.pageOrder.filter((pageNum) => priority.has(pageNum));
+  const orderedRest = state.pageOrder.filter((pageNum) => !priority.has(pageNum));
+  return { orderedPriority, orderedRest };
+}
+
+async function renderPagesList(pageNums, version) {
+  for (const pageNum of pageNums) {
     if (version !== state.renderVersion) {
       return;
     }
     await renderPage(pageNum);
   }
+}
+
+function scheduleBackgroundRender(orderedRest, version) {
+  if (state.fullRenderTimer) {
+    clearTimeout(state.fullRenderTimer);
+    state.fullRenderTimer = 0;
+  }
+  if (!orderedRest.length) {
+    return;
+  }
+  const passVersion = ++state.fullRenderPassVersion;
+  state.fullRenderTimer = setTimeout(async () => {
+    if (passVersion !== state.fullRenderPassVersion || version !== state.renderVersion) {
+      return;
+    }
+    await renderPagesList(orderedRest, version);
+  }, 0);
+}
+
+async function renderAllPages(options = {}) {
+  if (!state.pdfDoc) {
+    return;
+  }
+  const version = ++state.renderVersion;
+  const prioritizeVisible = options.prioritizeVisible !== false;
+  if (!prioritizeVisible) {
+    await renderPagesList(state.pageOrder, version);
+    return;
+  }
+
+  const { orderedPriority, orderedRest } = buildPriorityRenderOrder();
+  await renderPagesList(orderedPriority, version);
+  scheduleBackgroundRender(orderedRest, version);
 }
 
 async function renderThumbnail(pageNum, thumbCanvas) {
@@ -455,13 +805,16 @@ async function goToPage(pageNum, smooth = false) {
   }
   updateCurrentPage(pageNum);
 
-  if (state.isFullScreen && state.fullScreenViewMode === "single") {
-    els.viewerPanel.scrollTop = 0;
-    return;
-  }
-
   const view = state.pageViews.get(pageNum);
   if (!view) {
+    return;
+  }
+  if (state.isFullScreen && state.fullScreenViewMode === "single") {
+    view.wrap.scrollIntoView({
+      behavior: smooth ? "smooth" : "auto",
+      block: "center",
+      inline: "nearest"
+    });
     return;
   }
   view.wrap.scrollIntoView({
@@ -511,6 +864,67 @@ function queueScrollSync() {
   });
 }
 
+function ensureCurrentPageExists() {
+  if (!state.pageOrder.length) {
+    return;
+  }
+  if (!state.pageOrder.includes(state.currentPage)) {
+    state.currentPage = state.pageOrder[0];
+  }
+}
+
+function viewerSizeIsValid() {
+  return els.viewerPanel.clientWidth > 80 && els.viewerPanel.clientHeight > 80;
+}
+
+async function fitCurrentPageToViewport() {
+  if (!state.pdfDoc || !state.currentPage) {
+    return;
+  }
+  const page = await getPdfPage(state.currentPage);
+  const baseViewport = page.getViewport({ scale: 1, rotation: getRotation(state.currentPage) });
+  const maxWidth = Math.max(100, els.viewerPanel.clientWidth - 42);
+  const maxHeight = Math.max(100, els.viewerPanel.clientHeight - 44);
+  const fitWidthScale = maxWidth / Math.max(1, baseViewport.width);
+  const fitHeightScale = maxHeight / Math.max(1, baseViewport.height);
+  const nextScale = state.fullScreenViewMode === "single" ? Math.min(fitWidthScale, fitHeightScale) : fitWidthScale;
+  await zoomTo(clamp(nextScale, 0.25, 4), null, { prioritizeVisible: true });
+}
+
+function queueLayoutRecoveryRender() {
+  if (!state.pdfDoc) {
+    return;
+  }
+  const runRecovery = async () => {
+    ensureCurrentPageExists();
+    if (!viewerSizeIsValid()) {
+      setTimeout(() => {
+        queueLayoutRecoveryRender();
+      }, 120);
+      return;
+    }
+    applyPageVisibility();
+    await renderAllPages({ prioritizeVisible: true });
+    await goToPage(state.currentPage, false);
+    if (state.isFullScreen) {
+      await fitCurrentPageToViewport();
+      await goToPage(state.currentPage, false);
+    }
+  };
+  requestAnimationFrame(() => {
+    runRecovery().catch(() => {});
+  });
+  if (state.layoutRecoveryTimer) {
+    clearTimeout(state.layoutRecoveryTimer);
+  }
+  state.layoutRecoveryTimer = setTimeout(() => {
+    state.layoutRecoveryTimer = 0;
+    requestAnimationFrame(() => {
+      runRecovery().catch(() => {});
+    });
+  }, 120);
+}
+
 function itemRectInViewport(item, viewport) {
   const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
   const fontHeight = Math.max(8, Math.hypot(tx[2], tx[3]));
@@ -528,6 +942,21 @@ function itemRectInViewport(item, viewport) {
   };
 }
 
+function itemSegmentRectInViewport(item, viewport, segmentStart, segmentEnd) {
+  const full = itemRectInViewport(item, viewport);
+  const safeLength = Math.max(1, Number(item.searchableLength || item.searchable?.length || item.str?.length || 1));
+  const startRatio = clamp(segmentStart / safeLength, 0, 1);
+  const endRatio = clamp(segmentEnd / safeLength, 0, 1);
+  const left = full.left + full.width * Math.min(startRatio, endRatio);
+  const right = full.left + full.width * Math.max(startRatio, endRatio);
+  return {
+    left,
+    top: full.top,
+    width: Math.max(2, right - left),
+    height: full.height
+  };
+}
+
 function drawSearchHighlightsForPage(pageNum) {
   const view = state.pageViews.get(pageNum);
   if (!view || !view.viewport) {
@@ -540,13 +969,13 @@ function drawSearchHighlightsForPage(pageNum) {
 
   for (const matchIndex of matchIndexes) {
     const match = state.searchMatches[matchIndex];
-    const uniqueItemIndexes = new Set(match.itemIndexes || []);
-    for (const itemIndex of uniqueItemIndexes) {
+    for (const segment of match.segments || []) {
+      const itemIndex = segment.itemIndex;
       const item = items[itemIndex];
       if (!item) {
         continue;
       }
-      const rect = itemRectInViewport(item, view.viewport);
+      const rect = itemSegmentRectInViewport(item, view.viewport, segment.startOffset, segment.endOffset);
       const box = document.createElement("div");
       box.className = "search-hit-box";
       if (matchIndex === state.activeSearchIndex) {
@@ -810,6 +1239,7 @@ async function ensureTextItems(pageNum) {
       str: displayText,
       lower: lowered,
       searchable,
+      searchableLength: searchable.length,
       searchStart,
       searchEnd,
       width: item.width || 0,
@@ -845,7 +1275,8 @@ function renderSearchResultList() {
       li.classList.add("active");
     }
     const displayIndex = state.pageOrder.indexOf(match.pageNum) + 1;
-    li.textContent = `${displayIndex}페이지: ${match.text}`;
+    li.textContent =
+      state.language === "en" ? `Page ${displayIndex}: ${match.text}` : `${displayIndex}페이지: ${match.text}`;
     li.addEventListener("click", async () => {
       await activateSearchResult(index, true);
     });
@@ -860,13 +1291,39 @@ async function activateSearchResult(index, shouldScroll) {
   state.activeSearchIndex = index;
   const match = state.searchMatches[index];
   await goToPage(match.pageNum, shouldScroll);
+  if (shouldScroll) {
+    await scrollActiveMatchToCenter(match);
+  }
   renderSearchResultList();
   for (const pageNum of state.pageOrder) {
     drawSearchHighlightsForPage(pageNum);
   }
+  const pageNumber = state.pageOrder.indexOf(match.pageNum) + 1;
   setStatus(
-    `검색 결과 ${index + 1}/${state.searchMatches.length} - ${state.pageOrder.indexOf(match.pageNum) + 1}페이지`
+    state.language === "en"
+      ? `Result ${index + 1}/${state.searchMatches.length} - page ${pageNumber}`
+      : `검색 결과 ${index + 1}/${state.searchMatches.length} - ${pageNumber}페이지`
   );
+}
+
+async function scrollActiveMatchToCenter(match) {
+  if (!match) {
+    return;
+  }
+  const view = state.pageViews.get(match.pageNum);
+  if (!view || !view.viewport || !match.segments?.length) {
+    return;
+  }
+  const firstSegment = match.segments[0];
+  const items = state.textItemsCache.get(match.pageNum) || [];
+  const item = items[firstSegment.itemIndex];
+  if (!item) {
+    return;
+  }
+  const rect = itemSegmentRectInViewport(item, view.viewport, firstSegment.startOffset, firstSegment.endOffset);
+  const targetCenter = view.wrap.offsetTop + rect.top + rect.height / 2;
+  const nextScrollTop = Math.max(0, targetCenter - els.viewerPanel.clientHeight * 0.45);
+  els.viewerPanel.scrollTo({ top: nextScrollTop, behavior: "smooth" });
 }
 
 async function performSearch(rawQuery, jumpFirst = true) {
@@ -884,11 +1341,11 @@ async function performSearch(rawQuery, jumpFirst = true) {
     for (const pageNum of state.pageOrder) {
       drawSearchHighlightsForPage(pageNum);
     }
-    setStatus("검색어를 입력해 주세요.");
+    setStatus(state.language === "en" ? "Please enter a search keyword." : "검색어를 입력해 주세요.");
     return;
   }
 
-  setStatus("검색 중...");
+  setStatus(state.language === "en" ? "Searching..." : "검색 중...");
   for (const pageNum of state.pageOrder) {
     const items = await ensureTextItems(pageNum);
     const pageSearchText = state.searchPageCache.get(pageNum) || "";
@@ -903,6 +1360,7 @@ async function performSearch(rawQuery, jumpFirst = true) {
       }
       const foundEnd = found + queryNeedle.length;
       const hitItemIndexes = [];
+      const segments = [];
       for (const item of items) {
         if (item.searchEnd <= found) {
           continue;
@@ -910,9 +1368,19 @@ async function performSearch(rawQuery, jumpFirst = true) {
         if (item.searchStart >= foundEnd) {
           break;
         }
+        const overlapStart = Math.max(found, item.searchStart);
+        const overlapEnd = Math.min(foundEnd, item.searchEnd);
+        if (overlapEnd <= overlapStart) {
+          continue;
+        }
         hitItemIndexes.push(item.index);
+        segments.push({
+          itemIndex: item.index,
+          startOffset: overlapStart - item.searchStart,
+          endOffset: overlapEnd - item.searchStart
+        });
       }
-      if (!hitItemIndexes.length) {
+      if (!hitItemIndexes.length || !segments.length) {
         from = found + 1;
         continue;
       }
@@ -921,6 +1389,7 @@ async function performSearch(rawQuery, jumpFirst = true) {
       state.searchMatches.push({
         pageNum,
         itemIndexes: hitItemIndexes,
+        segments,
         text: preview || "(검색 결과)"
       });
       if (!state.perPageMatchIndexes.has(pageNum)) {
@@ -939,7 +1408,10 @@ async function performSearch(rawQuery, jumpFirst = true) {
   }
 
   if (state.searchMatches.length === 0) {
-    setStatus(`"${query}" 검색 결과가 없습니다.`, true);
+    setStatus(
+      state.language === "en" ? `No results for "${query}".` : `"${query}" 검색 결과가 없습니다.`,
+      true
+    );
     return;
   }
 
@@ -1035,7 +1507,85 @@ async function rotateCurrentPage(delta) {
   setStatus("현재 페이지를 회전했습니다.");
 }
 
-async function zoomTo(newScale, anchorEvent = null) {
+function buildZoomAnchorFromClient(clientX, clientY) {
+  const rect = els.viewerPanel.getBoundingClientRect();
+  return {
+    x: clientX - rect.left + els.viewerPanel.scrollLeft,
+    y: clientY - rect.top + els.viewerPanel.scrollTop,
+    dx: clientX - rect.left,
+    dy: clientY - rect.top
+  };
+}
+
+function normalizeWheelDelta(event) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return event.deltaY * 16;
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * els.viewerPanel.clientHeight;
+  }
+  return event.deltaY;
+}
+
+function requestWheelZoomApply() {
+  if (state.wheelZoomRaf) {
+    return;
+  }
+  state.wheelZoomRaf = requestAnimationFrame(() => {
+    state.wheelZoomRaf = 0;
+    if (!state.pdfDoc || Math.abs(state.wheelZoomDelta) < 0.01) {
+      state.wheelZoomDelta = 0;
+      return;
+    }
+    const delta = state.wheelZoomDelta;
+    const anchor = state.wheelZoomAnchor;
+    state.wheelZoomDelta = 0;
+    const factor = clamp(Math.exp(-delta * 0.0023), 0.78, 1.42);
+    queueZoomJob(state.scale * factor, anchor);
+    if (Math.abs(state.wheelZoomDelta) >= 0.01) {
+      requestWheelZoomApply();
+    }
+  });
+}
+
+function queueZoomJob(scale, anchor) {
+  state.pendingZoomJob = {
+    scale,
+    anchor,
+    options: { prioritizeVisible: true }
+  };
+  if (!state.zoomJobRunning) {
+    runZoomJobs().catch(() => {});
+  }
+}
+
+async function runZoomJobs() {
+  if (state.zoomJobRunning) {
+    return;
+  }
+  state.zoomJobRunning = true;
+  try {
+    while (state.pendingZoomJob) {
+      const job = state.pendingZoomJob;
+      state.pendingZoomJob = null;
+      await zoomTo(job.scale, job.anchor, job.options);
+    }
+  } finally {
+    state.zoomJobRunning = false;
+  }
+}
+
+function handleCtrlWheelZoom(event) {
+  if (!event.ctrlKey || !state.pdfDoc) {
+    return;
+  }
+  event.preventDefault();
+  state.wheelZoomAnchor = buildZoomAnchorFromClient(event.clientX, event.clientY);
+  state.wheelZoomDelta += normalizeWheelDelta(event);
+  requestWheelZoomApply();
+}
+
+async function zoomTo(newScale, anchorInput = null, options = {}) {
   if (!state.pdfDoc) {
     return;
   }
@@ -1045,19 +1595,21 @@ async function zoomTo(newScale, anchorEvent = null) {
   }
 
   let anchor = null;
-  if (anchorEvent) {
-    const rect = els.viewerPanel.getBoundingClientRect();
-    anchor = {
-      x: anchorEvent.clientX - rect.left + els.viewerPanel.scrollLeft,
-      y: anchorEvent.clientY - rect.top + els.viewerPanel.scrollTop,
-      dx: anchorEvent.clientX - rect.left,
-      dy: anchorEvent.clientY - rect.top
-    };
+  if (anchorInput && typeof anchorInput.clientX === "number" && typeof anchorInput.clientY === "number") {
+    anchor = buildZoomAnchorFromClient(anchorInput.clientX, anchorInput.clientY);
+  } else if (
+    anchorInput &&
+    typeof anchorInput.x === "number" &&
+    typeof anchorInput.y === "number" &&
+    typeof anchorInput.dx === "number" &&
+    typeof anchorInput.dy === "number"
+  ) {
+    anchor = anchorInput;
   }
 
   const oldScale = state.scale;
   state.scale = nextScale;
-  await renderAllPages();
+  await renderAllPages({ prioritizeVisible: options.prioritizeVisible !== false });
   updateToolbarState();
 
   if (anchor) {
@@ -1071,10 +1623,11 @@ async function zoomTo(newScale, anchorEvent = null) {
 
 function toggleFullscreenViewMode() {
   state.fullScreenViewMode = state.fullScreenViewMode === "single" ? "continuous" : "single";
-  localStorage.setItem("lookup-fullscreen-view-mode", state.fullScreenViewMode);
+  localStorage.setItem(storage.fullscreenMode, state.fullScreenViewMode);
   updateFullscreenButtons();
   applyPageVisibility();
-  goToPage(state.currentPage, false).catch(() => {});
+  persistLayoutState();
+  queueLayoutRecoveryRender();
 }
 
 async function buildEditedPdfBytes() {
@@ -1181,6 +1734,15 @@ async function savePdfOverwrite() {
   if (!state.pdfDoc) {
     return;
   }
+  if (state.sourceExt !== ".pdf") {
+    setStatus(
+      state.language === "en"
+        ? "Overwrite is available only when original file is PDF. Use Save As."
+        : "덮어쓰기는 원본이 PDF일 때만 가능합니다. 다른 이름 저장을 사용해 주세요.",
+      true
+    );
+    return;
+  }
   if (!state.filePath) {
     await savePdfAs();
     return;
@@ -1199,7 +1761,7 @@ async function savePdfOverwrite() {
   setStatus("원본 파일 덮어쓰기 저장 완료");
 }
 
-async function loadPdfFromBytes(rawBytes, filePath) {
+async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   const bytes = toUint8Array(rawBytes);
   const loadingTask = pdfjsLib.getDocument({ data: bytes });
   const pdfDoc = await loadingTask.promise;
@@ -1207,6 +1769,9 @@ async function loadPdfFromBytes(rawBytes, filePath) {
   state.pdfDoc = pdfDoc;
   state.sourceBytes = bytes;
   state.filePath = filePath || "";
+  state.sourceExt = meta.sourceExt || ".pdf";
+  state.sourceConverted = Boolean(meta.converted);
+  state.sourceConvertMode = meta.convertMode || (state.sourceExt === ".pdf" ? "native" : "fallback");
   state.pageOrder = Array.from({ length: pdfDoc.numPages }, (_v, i) => i + 1);
   state.pageCache.clear();
   state.pageRotations.clear();
@@ -1223,34 +1788,142 @@ async function loadPdfFromBytes(rawBytes, filePath) {
   await renderThumbnails();
   updatePageBadges();
   await goToPage(state.currentPage, false);
-  setStatus(`열림: ${fileNameFromPath(filePath)} (${state.pageOrder.length}페이지)`);
+  const convertTail =
+    meta && meta.converted
+      ? state.language === "en"
+        ? ` / Converted from ${String(meta.sourceExt || "").replace(".", "").toUpperCase()}`
+        : ` / ${String(meta.sourceExt || "").replace(".", "").toUpperCase()} 변환 열람`
+      : "";
+  setStatus(`열림: ${fileNameFromPath(filePath)} (${state.pageOrder.length}페이지)${convertTail}`);
+  if (meta.warningMessage) {
+    setStatus(meta.warningMessage);
+  }
 }
 
-async function loadPdfFromPath(filePath) {
+async function loadDocumentFromPath(filePath) {
   if (!filePath || typeof filePath !== "string") {
-    return;
-  }
-  if (!filePath.toLowerCase().endsWith(".pdf")) {
-    setStatus("PDF 파일만 열 수 있습니다.", true);
     return;
   }
 
   try {
-    setStatus("PDF를 열고 있습니다...");
-    const raw = await window.lookupAPI.readPdfFile(filePath);
-    await loadPdfFromBytes(raw, filePath);
+    setStatus(state.language === "en" ? "Opening document..." : "문서를 열고 있습니다...");
+    const payload = await window.lookupAPI.openDocument(filePath);
+    if (!payload || !payload.data) {
+      throw new Error(state.language === "en" ? "Unable to open the document." : "문서를 열지 못했습니다.");
+    }
+    await loadPdfFromBytes(payload.data, payload.sourcePath || filePath, payload);
   } catch (error) {
-    setStatus(`파일 열기 실패: ${error?.message || "알 수 없는 오류"}`, true);
+    setStatus(
+      state.language === "en"
+        ? `Failed to open file: ${error?.message || "Unknown error"}`
+        : `파일 열기 실패: ${error?.message || "알 수 없는 오류"}`,
+      true
+    );
   }
 }
 
 async function openFileDialog() {
-  const selectedPath = await window.lookupAPI.openPdfDialog();
+  const selectedPath = await window.lookupAPI.openDocumentDialog();
   if (!selectedPath) {
     return;
   }
-  await loadPdfFromPath(selectedPath);
+  await loadDocumentFromPath(selectedPath);
 }
+
+function toggleLeftPanelVisibility() {
+  if (state.isFullScreen) {
+    state.fullscreenThumbVisible = !state.fullscreenThumbVisible;
+  } else {
+    state.thumbPanelVisible = !state.thumbPanelVisible;
+  }
+  applyPanelLayout();
+  persistLayoutState();
+  queueLayoutRecoveryRender();
+}
+
+function toggleRightPanelVisibility() {
+  if (state.isFullScreen) {
+    state.fullscreenSearchVisible = !state.fullscreenSearchVisible;
+  } else {
+    state.searchPanelVisible = !state.searchPanelVisible;
+  }
+  applyPanelLayout();
+  persistLayoutState();
+  queueLayoutRecoveryRender();
+}
+
+function handlePanelResizeStart(side, startEvent) {
+  if (!(startEvent instanceof PointerEvent)) {
+    return;
+  }
+  startEvent.preventDefault();
+  state.activeResizer = side;
+  const startX = startEvent.clientX;
+  const startLeftWidth = state.leftPanelWidth;
+  const startRightWidth = state.rightPanelWidth;
+  const workspaceRect = els.workspace.getBoundingClientRect();
+
+  const activeResizerEl = side === "left" ? els.leftResizer : els.rightResizer;
+  activeResizerEl.classList.add("active");
+  activeResizerEl.setPointerCapture(startEvent.pointerId);
+
+  const onMove = (event) => {
+    const delta = event.clientX - startX;
+    if (side === "left") {
+      const maxWidth = Math.max(220, workspaceRect.width - 380);
+      state.leftPanelWidth = clamp(startLeftWidth + delta, 180, maxWidth);
+      if (!state.isFullScreen) {
+        state.thumbPanelVisible = true;
+      } else {
+        state.fullscreenThumbVisible = true;
+      }
+    } else {
+      const maxWidth = Math.max(260, workspaceRect.width - 380);
+      state.rightPanelWidth = clamp(startRightWidth - delta, 220, maxWidth);
+      if (!state.isFullScreen) {
+        state.searchPanelVisible = true;
+      } else {
+        state.fullscreenSearchVisible = true;
+      }
+    }
+    applyPanelLayout();
+  };
+
+  const onFinish = (event) => {
+    state.activeResizer = null;
+    activeResizerEl.classList.remove("active");
+    activeResizerEl.releasePointerCapture(startEvent.pointerId);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onFinish);
+    window.removeEventListener("pointercancel", onFinish);
+    persistLayoutState();
+    queueLayoutRecoveryRender();
+    if (event) {
+      event.preventDefault();
+    }
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onFinish);
+  window.addEventListener("pointercancel", onFinish);
+}
+
+function bindPanelResizeHandles() {
+  els.leftResizer.addEventListener("pointerdown", (event) => handlePanelResizeStart("left", event));
+  els.rightResizer.addEventListener("pointerdown", (event) => handlePanelResizeStart("right", event));
+}
+
+let resizeDebounceTimer = 0;
+function handleWindowResize() {
+  if (resizeDebounceTimer) {
+    clearTimeout(resizeDebounceTimer);
+  }
+  resizeDebounceTimer = setTimeout(() => {
+    resizeDebounceTimer = 0;
+    queueLayoutRecoveryRender();
+  }, 80);
+}
+
 function bindToolbarActions() {
   els.openFileBtn.addEventListener("click", () => openFileDialog());
   els.saveAsBtn.addEventListener("click", () => savePdfAs().catch((error) => setStatus(error.message, true)));
@@ -1289,8 +1962,8 @@ function bindToolbarActions() {
     await goToPage(state.pageOrder[clampedIndex], true);
   });
 
-  els.zoomInBtn.addEventListener("click", () => zoomTo(state.scale + 0.1).catch(() => {}));
-  els.zoomOutBtn.addEventListener("click", () => zoomTo(state.scale - 0.1).catch(() => {}));
+  els.zoomInBtn.addEventListener("click", () => zoomTo(state.scale * 1.12, null, { prioritizeVisible: true }).catch(() => {}));
+  els.zoomOutBtn.addEventListener("click", () => zoomTo(state.scale / 1.12, null, { prioritizeVisible: true }).catch(() => {}));
   els.zoomResetBtn.addEventListener("click", () => zoomTo(1).catch(() => {}));
 
   els.rotateLeftBtn.addEventListener("click", () => rotateCurrentPage(-90).catch(() => {}));
@@ -1310,8 +1983,35 @@ function bindToolbarActions() {
     }
   });
 
+  els.toggleThumbPanelBtn.addEventListener("click", () => {
+    toggleLeftPanelVisibility();
+  });
+  els.toggleSearchPanelBtn.addEventListener("click", () => {
+    toggleRightPanelVisibility();
+  });
+
   els.toggleDarkBtn.addEventListener("click", () => {
     setDarkMode(!document.body.classList.contains("dark"));
+  });
+  els.settingsBtn.addEventListener("click", () => {
+    openSettingsModal();
+  });
+  els.closeSettingsBtn.addEventListener("click", () => {
+    closeSettingsModal();
+  });
+  els.settingsModal.addEventListener("click", (event) => {
+    if (event.target instanceof HTMLElement && event.target.dataset.closeModal === "1") {
+      closeSettingsModal();
+    }
+  });
+  els.languageSelect.addEventListener("change", async () => {
+    await setLanguage(els.languageSelect.value, true);
+    els.settingsMessage.textContent = "";
+  });
+  els.contactDeveloperBtn.addEventListener("click", async () => {
+    await window.lookupAPI.copyText("lamsaiku65@gmail.com");
+    els.settingsMessage.textContent = t("copiedContact");
+    setStatus(t("copiedContact"));
   });
 
   els.toggleFullscreenBtn.addEventListener("click", () => {
@@ -1321,8 +2021,10 @@ function bindToolbarActions() {
     toggleFullscreenViewMode();
   });
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
-    state.fullscreenThumbVisible = !state.fullscreenThumbVisible;
-    applyThumbPanelVisibility();
+    toggleLeftPanelVisibility();
+  });
+  els.toggleSearchInFullscreenBtn.addEventListener("click", () => {
+    toggleRightPanelVisibility();
   });
 
   els.checkUpdateBtn.addEventListener("click", async () => {
@@ -1344,29 +2046,8 @@ function bindToolbarActions() {
 function bindWindowActions() {
   els.viewerPanel.addEventListener("scroll", queueScrollSync);
 
-  window.addEventListener(
-    "wheel",
-    async (event) => {
-      if (!event.ctrlKey || !state.pdfDoc) {
-        return;
-      }
-      if (!(event.target instanceof Node) || !els.viewerPanel.contains(event.target)) {
-        return;
-      }
-      event.preventDefault();
-      if (state.wheelZoomBusy) {
-        return;
-      }
-      state.wheelZoomBusy = true;
-      try {
-        const zoomDelta = event.deltaY < 0 ? 0.1 : -0.1;
-        await zoomTo(state.scale + zoomDelta, event);
-      } finally {
-        state.wheelZoomBusy = false;
-      }
-    },
-    { passive: false }
-  );
+  els.viewerPanel.addEventListener("wheel", handleCtrlWheelZoom, { passive: false });
+  window.addEventListener("resize", handleWindowResize);
 
   els.viewerPanel.addEventListener("dragover", (event) => {
     event.preventDefault();
@@ -1382,10 +2063,14 @@ function bindWindowActions() {
     if (!file?.path) {
       return;
     }
-    await loadPdfFromPath(file.path);
+    await loadDocumentFromPath(file.path);
   });
 
   window.addEventListener("keydown", async (event) => {
+    if (event.key === "Escape" && !els.settingsModal.classList.contains("hidden")) {
+      closeSettingsModal();
+      return;
+    }
     if (event.ctrlKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       els.searchInput.focus();
@@ -1447,7 +2132,7 @@ function bindWindowActions() {
 
 function bindMainProcessEvents() {
   window.lookupAPI.onSystemOpenFile((filePath) => {
-    loadPdfFromPath(filePath).catch((error) => {
+    loadDocumentFromPath(filePath).catch((error) => {
       setStatus(error.message, true);
     });
   });
@@ -1470,19 +2155,13 @@ function bindMainProcessEvents() {
           await goToPage(state.pageOrder[index + 1], true);
         }
       },
-      "zoom-in": () => zoomTo(state.scale + 0.1),
-      "zoom-out": () => zoomTo(state.scale - 0.1),
+      "zoom-in": () => zoomTo(state.scale * 1.12, null, { prioritizeVisible: true }),
+      "zoom-out": () => zoomTo(state.scale / 1.12, null, { prioritizeVisible: true }),
       "zoom-reset": () => zoomTo(1),
       "toggle-dark": () => setDarkMode(!document.body.classList.contains("dark")),
       "toggle-fullscreen-view-mode": () => toggleFullscreenViewMode(),
-      "toggle-thumb-panel": () => {
-        if (state.isFullScreen) {
-          state.fullscreenThumbVisible = !state.fullscreenThumbVisible;
-        } else {
-          state.thumbPanelVisible = !state.thumbPanelVisible;
-        }
-        applyThumbPanelVisibility();
-      },
+      "toggle-thumb-panel": () => toggleLeftPanelVisibility(),
+      "toggle-search-panel": () => toggleRightPanelVisibility(),
       "check-update": () => window.lookupAPI.checkForUpdates(),
       "install-update": () => window.lookupAPI.installUpdateNow()
     };
@@ -1497,30 +2176,61 @@ function bindMainProcessEvents() {
   window.lookupAPI.onFullScreenChanged((isFullScreen) => {
     state.isFullScreen = isFullScreen;
     document.body.classList.toggle("fullscreen", isFullScreen);
-    document.body.classList.toggle("hide-search-panel", isFullScreen);
 
     if (isFullScreen) {
       state.fullscreenThumbVisible = false;
+      state.fullscreenSearchVisible = false;
       els.fullscreenMiniBar.classList.remove("hidden");
     } else {
       els.fullscreenMiniBar.classList.add("hidden");
     }
 
-    applyThumbPanelVisibility();
+    applyPanelLayout();
     applyPageVisibility();
     updateToolbarState();
-    goToPage(state.currentPage, false).catch(() => {});
+    persistLayoutState();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        queueLayoutRecoveryRender();
+      });
+    });
   });
 
   window.lookupAPI.onUpdateStatus((payload) => {
     if (!payload?.status) {
       return;
     }
-    if (payload.status === "downloaded") {
+    if (payload.status === "downloaded" || payload.status === "installing") {
       els.installUpdateBtn.classList.remove("hidden");
     } else if (payload.status === "checking" || payload.status === "downloading" || payload.status === "available") {
       els.installUpdateBtn.classList.add("hidden");
     }
+    if (payload.currentVersion) {
+      state.appVersion = payload.currentVersion;
+    }
+    if (payload.targetVersion) {
+      state.updateTargetVersion = payload.targetVersion;
+    }
+
+    if (payload.status === "downloading" || payload.status === "available" || payload.status === "checking") {
+      showUpdateProgressBar(true);
+    }
+    if (typeof payload.percent === "number") {
+      setUpdateProgress(payload.percent);
+    }
+    if (payload.status === "not-available") {
+      setUpdateProgress(100);
+      showUpdateProgressBar(false);
+      state.updateTargetVersion = "";
+    }
+    if (payload.status === "downloaded" || payload.status === "installing") {
+      setUpdateProgress(100);
+      showUpdateProgressBar(true);
+    }
+    if (payload.status === "error" || payload.status === "disabled") {
+      showUpdateProgressBar(false);
+    }
+    updateVersionLabels();
     if (payload.message) {
       setStatus(payload.message, payload.status === "error");
     }
@@ -1528,35 +2238,58 @@ function bindMainProcessEvents() {
 }
 
 async function initializeUpdateStatus() {
+  state.appVersion = await window.lookupAPI.getAppVersion();
+  updateVersionLabels();
   const config = await window.lookupAPI.getUpdateConfig();
+  if (config?.currentVersion) {
+    state.appVersion = config.currentVersion;
+  }
+  if (config?.targetVersion) {
+    state.updateTargetVersion = config.targetVersion;
+  }
+  updateVersionLabels();
   if (!config.enabled) {
-    setStatus("업데이트 비활성: update-config.json에 GitHub owner/repo를 입력하세요.");
+    setStatus(t("updateDisabled"));
   } else {
-    setStatus(`업데이트 연동 준비됨: ${config.owner}/${config.repo}`);
+    setStatus(`${t("updateReady")}: ${config.owner}/${config.repo}`);
   }
 }
 
 async function init() {
+  try {
+    const settings = await window.lookupAPI.getSettings();
+    if (settings?.language === "ko" || settings?.language === "en") {
+      state.language = settings.language;
+    }
+  } catch (_error) {
+    // fallback to local storage language
+  }
+  localStorage.setItem(storage.language, state.language);
+  applyLanguageToStaticTexts();
   applySavedDarkMode();
   bindToolbarActions();
   bindWindowActions();
+  bindPanelResizeHandles();
   bindMainProcessEvents();
   setEditingMode("view");
-  applyThumbPanelVisibility();
+  applyPanelLayout();
   updateToolbarState();
 
   const isFullScreen = await window.lookupAPI.isFullScreen();
   state.isFullScreen = isFullScreen;
   document.body.classList.toggle("fullscreen", isFullScreen);
-  document.body.classList.toggle("hide-search-panel", isFullScreen);
   if (isFullScreen) {
     state.fullscreenThumbVisible = false;
+    state.fullscreenSearchVisible = false;
     els.fullscreenMiniBar.classList.remove("hidden");
   } else {
     els.fullscreenMiniBar.classList.add("hidden");
   }
-  applyThumbPanelVisibility();
+  applyPanelLayout();
   updateFullscreenButtons();
+  persistLayoutState();
+  showUpdateProgressBar(false);
+  setUpdateProgress(0);
   await initializeUpdateStatus();
 }
 
