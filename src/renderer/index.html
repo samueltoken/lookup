@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
@@ -9,7 +9,7 @@
   <body>
     <div class="app-shell">
       <header class="top-toolbar">
-        <div class="toolbar-group">
+        <div class="toolbar-group toolbar-main-left">
           <button id="openFileBtn" class="action primary" data-i18n="open">열기</button>
           <button id="saveAsBtn" class="action" data-i18n="saveAs">다른 이름 저장</button>
           <button id="saveOverwriteBtn" class="action" data-i18n="saveOverwrite">덮어쓰기</button>
@@ -56,17 +56,17 @@
         </div>
 
         <div class="toolbar-group search-group">
-          <input id="searchInput" class="search-input" type="text" data-i18n-placeholder="searchPlaceholder" placeholder="문서 검색" />
+          <input
+            id="searchInput"
+            class="search-input"
+            type="text"
+            data-i18n-placeholder="searchPlaceholder"
+            placeholder="문서 검색"
+          />
           <button id="searchBtn" class="action" data-i18n="search">검색</button>
           <button id="searchPrevBtn" class="action" data-i18n="prevHit">이전 결과</button>
           <button id="searchNextBtn" class="action" data-i18n="nextHit">다음 결과</button>
           <span id="searchCountLabel" class="muted">결과 0개</span>
-        </div>
-
-        <div class="toolbar-group update-group">
-          <button id="checkUpdateBtn" class="action" data-i18n="checkUpdate">업데이트 확인</button>
-          <button id="installUpdateBtn" class="action hidden" data-i18n="installUpdate">지금 설치</button>
-          <span id="currentVersionLabel" class="muted">버전 -</span>
         </div>
       </header>
 
@@ -78,7 +78,7 @@
 
         <div id="leftResizer" class="panel-resizer left" role="separator" aria-label="미리보기 패널 크기 조절"></div>
 
-        <section id="viewerPanel" class="viewer-panel">
+        <section id="viewerPanel" class="viewer-panel" tabindex="0">
           <div id="emptyHint" class="empty-hint">
             <h1>lookup</h1>
             <p data-i18n="dropHint">문서를 끌어놓거나 열기 버튼을 눌러 주세요.</p>
@@ -86,9 +86,10 @@
           <div id="pagesContainer" class="pages-container"></div>
 
           <div id="fullscreenMiniBar" class="fullscreen-mini hidden">
-            <button id="toggleFullscreenViewModeBtn" class="action" data-i18n="fullscreenModeContinuous">전체화면: 연속 스크롤</button>
+            <button id="toggleFullscreenViewModeBtn" class="action" data-i18n="fullscreenModeContinuous">
+              전체화면: 연속 스크롤
+            </button>
             <button id="toggleThumbInFullscreenBtn" class="action" data-i18n="thumbToggleShow">미리보기 표시</button>
-            <button id="toggleSearchInFullscreenBtn" class="action" data-i18n="searchPanelToggleShow">검색 패널 표시</button>
           </div>
         </section>
 
@@ -132,7 +133,11 @@
               <option value="en">English</option>
             </select>
           </label>
-          <button id="contactDeveloperBtn" class="action" data-i18n="contactDeveloper">개발자 문의 (이메일 복사)</button>
+          <button id="settingsCheckUpdateBtn" class="action" data-i18n="checkUpdate">업데이트 확인</button>
+          <p id="currentVersionLabel" class="muted">현재 버전 -</p>
+          <button id="contactDeveloperBtn" class="action" data-i18n="contactDeveloper">
+            개발자 문의 (이메일 복사)
+          </button>
           <p id="settingsMessage" class="muted"></p>
         </div>
       </div>

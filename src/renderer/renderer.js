@@ -61,7 +61,6 @@ const i18n = {
     prevHit: "이전 결과",
     nextHit: "다음 결과",
     checkUpdate: "업데이트 확인",
-    installUpdate: "지금 설치",
     thumbPanelTitle: "미리보기 (드래그로 순서 변경)",
     dropHint: "문서를 끌어놓거나 열기 버튼을 눌러 주세요.",
     fullscreenModeContinuous: "전체화면: 연속 스크롤",
@@ -77,7 +76,11 @@ const i18n = {
     searchPanelCount: "{count}건",
     pageLabel: "페이지",
     updateReady: "업데이트 연동 준비됨",
-    updateDisabled: "업데이트 비활성: 저장소 설정을 찾지 못했습니다."
+    updateDisabled: "업데이트 비활성: 저장소 설정을 찾지 못했습니다.",
+    updateChecking: "업데이트를 확인하고 있습니다...",
+    printPreparing: "인쇄 미리보기를 준비하고 있습니다...",
+    printOpened: "인쇄 미리보기를 열었습니다.",
+    printFailed: "인쇄 미리보기를 열지 못했습니다."
   },
   en: {
     open: "Open",
@@ -106,7 +109,6 @@ const i18n = {
     prevHit: "Prev Hit",
     nextHit: "Next Hit",
     checkUpdate: "Check Update",
-    installUpdate: "Install Now",
     thumbPanelTitle: "Thumbnails (drag to reorder)",
     dropHint: "Drop a document or click Open.",
     fullscreenModeContinuous: "Fullscreen: Continuous",
@@ -122,7 +124,11 @@ const i18n = {
     searchPanelCount: "{count} items",
     pageLabel: "page",
     updateReady: "Update connected",
-    updateDisabled: "Update disabled: repository info not found."
+    updateDisabled: "Update disabled: repository info not found.",
+    updateChecking: "Checking for updates...",
+    printPreparing: "Preparing print preview...",
+    printOpened: "Print preview opened.",
+    printFailed: "Unable to open print preview."
   }
 };
 
@@ -162,13 +168,15 @@ const state = {
   thumbPanelVisible: getStoredBool(storage.leftPanelVisible, true),
   searchPanelVisible: getStoredBool(storage.rightPanelVisible, false),
   fullscreenThumbVisible: false,
-  fullscreenSearchVisible: false,
+  fullScreenAutoFitDone: false,
+  zoomMode: "fit",
   scrollRaf: 0,
   saveDirty: false,
   wheelZoomRaf: 0,
   wheelZoomApplying: false,
   wheelZoomDelta: 0,
   wheelZoomAnchor: null,
+  singlePageWheelStepTime: 0,
   mainRenderQuality: 1.75,
   thumbRenderQuality: 2.6,
   leftPanelWidth: clamp(getStoredNumber(storage.leftPanelWidth, 250), 180, 560),
@@ -182,7 +190,8 @@ const state = {
   language: localStorage.getItem(storage.language) === "en" ? "en" : "ko",
   applyingLanguage: false,
   pendingZoomJob: null,
-  zoomJobRunning: false
+  zoomJobRunning: false,
+  viewerRenderRecoveryCount: 0
 };
 
 const els = {
@@ -212,8 +221,6 @@ const els = {
   toggleSearchPanelBtn: document.getElementById("toggleSearchPanelBtn"),
   toggleFullscreenBtn: document.getElementById("toggleFullscreenBtn"),
   toggleDarkBtn: document.getElementById("toggleDarkBtn"),
-  checkUpdateBtn: document.getElementById("checkUpdateBtn"),
-  installUpdateBtn: document.getElementById("installUpdateBtn"),
   thumbPanel: document.getElementById("thumbPanel"),
   leftResizer: document.getElementById("leftResizer"),
   rightResizer: document.getElementById("rightResizer"),
@@ -224,7 +231,6 @@ const els = {
   fullscreenMiniBar: document.getElementById("fullscreenMiniBar"),
   toggleFullscreenViewModeBtn: document.getElementById("toggleFullscreenViewModeBtn"),
   toggleThumbInFullscreenBtn: document.getElementById("toggleThumbInFullscreenBtn"),
-  toggleSearchInFullscreenBtn: document.getElementById("toggleSearchInFullscreenBtn"),
   searchPanel: document.getElementById("searchPanel"),
   searchPanelCount: document.getElementById("searchPanelCount"),
   searchResultList: document.getElementById("searchResultList"),
@@ -239,6 +245,7 @@ const els = {
   settingsModal: document.getElementById("settingsModal"),
   closeSettingsBtn: document.getElementById("closeSettingsBtn"),
   languageSelect: document.getElementById("languageSelect"),
+  settingsCheckUpdateBtn: document.getElementById("settingsCheckUpdateBtn"),
   contactDeveloperBtn: document.getElementById("contactDeveloperBtn"),
   settingsMessage: document.getElementById("settingsMessage")
 };
@@ -325,6 +332,31 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+const MAX_CANVAS_EDGE = 8192;
+const MAX_CANVAS_PIXELS = 33554432;
+
+function computeSafeRenderScale(width, height, requestedScale) {
+  let safeScale = Math.max(0.2, requestedScale);
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  let guard = 0;
+  while (guard < 20) {
+    const pixelWidth = safeWidth * safeScale;
+    const pixelHeight = safeHeight * safeScale;
+    const totalPixels = pixelWidth * pixelHeight;
+    if (pixelWidth <= MAX_CANVAS_EDGE && pixelHeight <= MAX_CANVAS_EDGE && totalPixels <= MAX_CANVAS_PIXELS) {
+      break;
+    }
+    safeScale *= 0.86;
+    guard += 1;
+  }
+  return Math.max(0.2, safeScale);
+}
+
+function setZoomMode(mode) {
+  state.zoomMode = mode === "manual" ? "manual" : "fit";
+}
+
 function normalizeSearchText(text) {
   return String(text || "")
     .toLowerCase()
@@ -359,6 +391,27 @@ function getCurrentDisplayIndex() {
   return state.pageOrder.indexOf(state.currentPage);
 }
 
+function getNeighborPage(direction) {
+  const currentIndex = getCurrentDisplayIndex();
+  if (currentIndex < 0) {
+    return null;
+  }
+  const targetIndex = currentIndex + (direction > 0 ? 1 : -1);
+  if (targetIndex < 0 || targetIndex >= state.pageOrder.length) {
+    return null;
+  }
+  return state.pageOrder[targetIndex];
+}
+
+async function stepPage(direction, smooth = true) {
+  const nextPage = getNeighborPage(direction);
+  if (!nextPage) {
+    return false;
+  }
+  await goToPage(nextPage, smooth);
+  return true;
+}
+
 function getAnnotationBucket(pageNum) {
   if (!state.annotations.has(pageNum)) {
     state.annotations.set(pageNum, { highlights: [], pens: [], texts: [] });
@@ -389,7 +442,10 @@ function getEffectiveLeftPanelVisible() {
 }
 
 function getEffectiveRightPanelVisible() {
-  return state.isFullScreen ? state.fullscreenSearchVisible : state.searchPanelVisible;
+  if (state.isFullScreen) {
+    return false;
+  }
+  return state.searchPanelVisible;
 }
 
 function applyPanelLayout() {
@@ -404,7 +460,6 @@ function applyPanelLayout() {
   els.toggleThumbPanelBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
   els.toggleSearchPanelBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
   els.toggleThumbInFullscreenBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
-  els.toggleSearchInFullscreenBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
 }
 
 function showUpdateProgressBar(show) {
@@ -573,27 +628,55 @@ async function renderPage(pageNum) {
   view.wrap.style.height = `${viewport.height}px`;
 
   const dpr = window.devicePixelRatio || 1;
-  const renderScale = dpr * state.mainRenderQuality;
+  const requestedScale = dpr * state.mainRenderQuality;
+  let renderScale = computeSafeRenderScale(viewport.width, viewport.height, requestedScale);
   const canvas = view.canvas;
-  canvas.width = Math.floor(viewport.width * renderScale);
-  canvas.height = Math.floor(viewport.height * renderScale);
-  canvas.style.width = `${viewport.width}px`;
-  canvas.style.height = `${viewport.height}px`;
+  const syncCanvasSize = () => {
+    canvas.width = Math.max(1, Math.floor(viewport.width * renderScale));
+    canvas.height = Math.max(1, Math.floor(viewport.height * renderScale));
+    canvas.style.width = `${viewport.width}px`;
+    canvas.style.height = `${viewport.height}px`;
 
-  view.annotationCanvas.width = canvas.width;
-  view.annotationCanvas.height = canvas.height;
-  view.annotationCanvas.style.width = canvas.style.width;
-  view.annotationCanvas.style.height = canvas.style.height;
+    view.annotationCanvas.width = canvas.width;
+    view.annotationCanvas.height = canvas.height;
+    view.annotationCanvas.style.width = canvas.style.width;
+    view.annotationCanvas.style.height = canvas.style.height;
+  };
+  syncCanvasSize();
 
   const renderToken = ++view.renderToken;
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  await page.render({
-    canvasContext: context,
-    viewport,
-    transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-  }).promise;
+  let rendered = false;
+  try {
+    await page.render({
+      canvasContext: context,
+      viewport,
+      transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
+    }).promise;
+    rendered = true;
+  } catch (_error) {
+    renderScale = computeSafeRenderScale(viewport.width, viewport.height, renderScale * 0.72);
+    syncCanvasSize();
+    const retryContext = canvas.getContext("2d", { alpha: false });
+    retryContext.imageSmoothingEnabled = true;
+    retryContext.imageSmoothingQuality = "medium";
+    try {
+      await page.render({
+        canvasContext: retryContext,
+        viewport,
+        transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
+      }).promise;
+      rendered = true;
+    } catch (_secondError) {
+      rendered = false;
+    }
+  }
+  if (!rendered) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
   if (renderToken !== view.renderToken || renderToken !== state.renderVersion) {
     return;
   }
@@ -695,21 +778,32 @@ async function renderThumbnail(pageNum, thumbCanvas) {
   const thumbScale = targetWidth / viewport.width;
   const scaledViewport = page.getViewport({ scale: thumbScale, rotation: getRotation(pageNum) });
   const dpr = window.devicePixelRatio || 1;
-  const renderScale = dpr * state.thumbRenderQuality;
+  let renderScale = computeSafeRenderScale(scaledViewport.width, scaledViewport.height, dpr * state.thumbRenderQuality);
   const context = thumbCanvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
 
-  thumbCanvas.width = Math.floor(scaledViewport.width * renderScale);
-  thumbCanvas.height = Math.floor(scaledViewport.height * renderScale);
+  thumbCanvas.width = Math.max(1, Math.floor(scaledViewport.width * renderScale));
+  thumbCanvas.height = Math.max(1, Math.floor(scaledViewport.height * renderScale));
   thumbCanvas.style.width = `${scaledViewport.width}px`;
   thumbCanvas.style.height = `${scaledViewport.height}px`;
 
-  await page.render({
-    canvasContext: context,
-    viewport: scaledViewport,
-    transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-  }).promise;
+  try {
+    await page.render({
+      canvasContext: context,
+      viewport: scaledViewport,
+      transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
+    }).promise;
+  } catch (_error) {
+    renderScale = computeSafeRenderScale(scaledViewport.width, scaledViewport.height, renderScale * 0.72);
+    thumbCanvas.width = Math.max(1, Math.floor(scaledViewport.width * renderScale));
+    thumbCanvas.height = Math.max(1, Math.floor(scaledViewport.height * renderScale));
+    await page.render({
+      canvasContext: context,
+      viewport: scaledViewport,
+      transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
+    }).promise;
+  }
 }
 
 async function renderThumbnails() {
@@ -809,7 +903,7 @@ async function goToPage(pageNum, smooth = false) {
   if (!view) {
     return;
   }
-  if (state.isFullScreen && state.fullScreenViewMode === "single") {
+  if (isSinglePageFullscreen()) {
     view.wrap.scrollIntoView({
       behavior: smooth ? "smooth" : "auto",
       block: "center",
@@ -828,7 +922,7 @@ function updateCurrentPageByScroll() {
   if (!state.pdfDoc) {
     return;
   }
-  if (state.isFullScreen && state.fullScreenViewMode === "single") {
+  if (isSinglePageFullscreen()) {
     return;
   }
 
@@ -873,6 +967,21 @@ function ensureCurrentPageExists() {
   }
 }
 
+function isSinglePageFullscreen() {
+  return state.isFullScreen && state.fullScreenViewMode === "single";
+}
+
+function focusViewerPanel() {
+  if (!els.viewerPanel) {
+    return;
+  }
+  try {
+    els.viewerPanel.focus({ preventScroll: true });
+  } catch (_error) {
+    els.viewerPanel.focus();
+  }
+}
+
 function viewerSizeIsValid() {
   return els.viewerPanel.clientWidth > 80 && els.viewerPanel.clientHeight > 80;
 }
@@ -888,31 +997,54 @@ async function fitCurrentPageToViewport() {
   const fitWidthScale = maxWidth / Math.max(1, baseViewport.width);
   const fitHeightScale = maxHeight / Math.max(1, baseViewport.height);
   const nextScale = state.fullScreenViewMode === "single" ? Math.min(fitWidthScale, fitHeightScale) : fitWidthScale;
-  await zoomTo(clamp(nextScale, 0.25, 4), null, { prioritizeVisible: true });
+  await zoomTo(clamp(nextScale, 0.25, 6), null, { prioritizeVisible: true, zoomMode: "fit" });
+  state.fullScreenAutoFitDone = true;
 }
 
-function queueLayoutRecoveryRender() {
+function shouldApplyFullscreenFit(options = {}) {
+  if (!state.isFullScreen) {
+    return false;
+  }
+  if (options.forceFit) {
+    return true;
+  }
+  if (state.zoomMode === "manual") {
+    return false;
+  }
+  return !state.fullScreenAutoFitDone;
+}
+
+function queueLayoutRecoveryRender(options = {}) {
   if (!state.pdfDoc) {
     return;
   }
+  const attempt = Number(options.attempt || 0);
   const runRecovery = async () => {
     ensureCurrentPageExists();
     if (!viewerSizeIsValid()) {
-      setTimeout(() => {
-        queueLayoutRecoveryRender();
-      }, 120);
+      if (attempt < 5) {
+        setTimeout(() => {
+          queueLayoutRecoveryRender({ ...options, attempt: attempt + 1 });
+        }, 120);
+      }
       return;
     }
+    state.viewerRenderRecoveryCount += 1;
     applyPageVisibility();
     await renderAllPages({ prioritizeVisible: true });
     await goToPage(state.currentPage, false);
-    if (state.isFullScreen) {
+    if (shouldApplyFullscreenFit(options)) {
       await fitCurrentPageToViewport();
       await goToPage(state.currentPage, false);
     }
+    if (state.isFullScreen) {
+      focusViewerPanel();
+    }
   };
   requestAnimationFrame(() => {
-    runRecovery().catch(() => {});
+    requestAnimationFrame(() => {
+      runRecovery().catch(() => {});
+    });
   });
   if (state.layoutRecoveryTimer) {
     clearTimeout(state.layoutRecoveryTimer);
@@ -1585,11 +1717,41 @@ function handleCtrlWheelZoom(event) {
   requestWheelZoomApply();
 }
 
+function isViewerEventTarget(event) {
+  const target = event.target;
+  return Boolean(target instanceof Node && els.viewerPanel.contains(target));
+}
+
+function handleViewerWheel(event) {
+  if (!state.pdfDoc || !isViewerEventTarget(event)) {
+    return;
+  }
+  if (event.ctrlKey) {
+    handleCtrlWheelZoom(event);
+    return;
+  }
+  if (!isSinglePageFullscreen()) {
+    return;
+  }
+  const delta = normalizeWheelDelta(event);
+  if (Math.abs(delta) < 8) {
+    return;
+  }
+  const now = Date.now();
+  if (now - state.singlePageWheelStepTime < 90) {
+    event.preventDefault();
+    return;
+  }
+  state.singlePageWheelStepTime = now;
+  event.preventDefault();
+  stepPage(delta > 0 ? 1 : -1, false).catch(() => {});
+}
+
 async function zoomTo(newScale, anchorInput = null, options = {}) {
   if (!state.pdfDoc) {
     return;
   }
-  const nextScale = clamp(newScale, 0.25, 4);
+  const nextScale = clamp(newScale, 0.25, 6);
   if (Math.abs(nextScale - state.scale) < 0.001) {
     return;
   }
@@ -1609,6 +1771,7 @@ async function zoomTo(newScale, anchorInput = null, options = {}) {
 
   const oldScale = state.scale;
   state.scale = nextScale;
+  setZoomMode(options.zoomMode || "manual");
   await renderAllPages({ prioritizeVisible: options.prioritizeVisible !== false });
   updateToolbarState();
 
@@ -1627,6 +1790,12 @@ function toggleFullscreenViewMode() {
   updateFullscreenButtons();
   applyPageVisibility();
   persistLayoutState();
+  if (state.isFullScreen) {
+    setZoomMode("fit");
+    state.fullScreenAutoFitDone = false;
+    queueLayoutRecoveryRender({ forceFit: true });
+    return;
+  }
   queueLayoutRecoveryRender();
 }
 
@@ -1761,6 +1930,37 @@ async function savePdfOverwrite() {
   setStatus("원본 파일 덮어쓰기 저장 완료");
 }
 
+async function openPrintPreview() {
+  if (!state.pdfDoc) {
+    return false;
+  }
+  setStatus(t("printPreparing"));
+  const bytes = await buildEditedPdfBytes();
+  const currentName = fileNameFromPath(state.filePath) || "document.pdf";
+  const safeBase = currentName.replace(/\.[^./\\]+$/, "");
+  const fileName = `${safeBase}-print-preview.pdf`;
+  const result = await window.lookupAPI.printPreview(bytes, fileName);
+  if (!result?.ok) {
+    setStatus(result?.message || t("printFailed"), true);
+    return false;
+  }
+  setStatus(t("printOpened"));
+  return true;
+}
+
+async function checkForUpdatesFromUI() {
+  setStatus(t("updateChecking"));
+  const result = await window.lookupAPI.checkForUpdates();
+  if (!result.ok) {
+    setStatus(
+      state.language === "en" ? `Update check failed: ${result.message}` : `업데이트 확인 실패: ${result.message}`,
+      true
+    );
+    return false;
+  }
+  return true;
+}
+
 async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   const bytes = toUint8Array(rawBytes);
   const loadingTask = pdfjsLib.getDocument({ data: bytes });
@@ -1780,6 +1980,8 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.searchPageCache.clear();
   clearSearchState();
   state.scale = 1;
+  setZoomMode("fit");
+  state.fullScreenAutoFitDone = false;
   state.currentPage = 1;
   state.saveDirty = false;
 
@@ -1838,15 +2040,14 @@ function toggleLeftPanelVisibility() {
   }
   applyPanelLayout();
   persistLayoutState();
-  queueLayoutRecoveryRender();
+  queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen });
 }
 
 function toggleRightPanelVisibility() {
   if (state.isFullScreen) {
-    state.fullscreenSearchVisible = !state.fullscreenSearchVisible;
-  } else {
-    state.searchPanelVisible = !state.searchPanelVisible;
+    return;
   }
+  state.searchPanelVisible = !state.searchPanelVisible;
   applyPanelLayout();
   persistLayoutState();
   queueLayoutRecoveryRender();
@@ -1882,8 +2083,6 @@ function handlePanelResizeStart(side, startEvent) {
       state.rightPanelWidth = clamp(startRightWidth - delta, 220, maxWidth);
       if (!state.isFullScreen) {
         state.searchPanelVisible = true;
-      } else {
-        state.fullscreenSearchVisible = true;
       }
     }
     applyPanelLayout();
@@ -1897,7 +2096,7 @@ function handlePanelResizeStart(side, startEvent) {
     window.removeEventListener("pointerup", onFinish);
     window.removeEventListener("pointercancel", onFinish);
     persistLayoutState();
-    queueLayoutRecoveryRender();
+    queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen });
     if (event) {
       event.preventDefault();
     }
@@ -1920,7 +2119,7 @@ function handleWindowResize() {
   }
   resizeDebounceTimer = setTimeout(() => {
     resizeDebounceTimer = 0;
-    queueLayoutRecoveryRender();
+    queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen && state.zoomMode === "manual" });
   }, 80);
 }
 
@@ -1930,12 +2129,7 @@ function bindToolbarActions() {
   els.saveOverwriteBtn.addEventListener("click", () =>
     savePdfOverwrite().catch((error) => setStatus(error.message, true))
   );
-  els.printBtn.addEventListener("click", async () => {
-    const success = await window.lookupAPI.printDocument();
-    if (!success) {
-      setStatus("인쇄를 시작하지 못했습니다.", true);
-    }
-  });
+  els.printBtn.addEventListener("click", () => openPrintPreview().catch((error) => setStatus(error.message, true)));
 
   els.prevPageBtn.addEventListener("click", async () => {
     const index = getCurrentDisplayIndex();
@@ -2013,6 +2207,12 @@ function bindToolbarActions() {
     els.settingsMessage.textContent = t("copiedContact");
     setStatus(t("copiedContact"));
   });
+  els.settingsCheckUpdateBtn.addEventListener("click", async () => {
+    const ok = await checkForUpdatesFromUI();
+    if (ok) {
+      setStatus(state.language === "en" ? "Update check started." : "업데이트 확인을 시작했습니다.");
+    }
+  });
 
   els.toggleFullscreenBtn.addEventListener("click", () => {
     window.lookupAPI.toggleFullScreen();
@@ -2023,30 +2223,14 @@ function bindToolbarActions() {
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
     toggleLeftPanelVisibility();
   });
-  els.toggleSearchInFullscreenBtn.addEventListener("click", () => {
-    toggleRightPanelVisibility();
-  });
-
-  els.checkUpdateBtn.addEventListener("click", async () => {
-    setStatus("업데이트를 확인하고 있습니다...");
-    const result = await window.lookupAPI.checkForUpdates();
-    if (!result.ok) {
-      setStatus(`업데이트 확인 실패: ${result.message}`, true);
-    }
-  });
-
-  els.installUpdateBtn.addEventListener("click", async () => {
-    const result = await window.lookupAPI.installUpdateNow();
-    if (!result.ok) {
-      setStatus(result.message, true);
-    }
-  });
 }
 
 function bindWindowActions() {
   els.viewerPanel.addEventListener("scroll", queueScrollSync);
-
-  els.viewerPanel.addEventListener("wheel", handleCtrlWheelZoom, { passive: false });
+  els.viewerPanel.addEventListener("click", () => {
+    focusViewerPanel();
+  });
+  els.viewerPanel.addEventListener("wheel", handleViewerWheel, { passive: false });
   window.addEventListener("resize", handleWindowResize);
 
   els.viewerPanel.addEventListener("dragover", (event) => {
@@ -2071,6 +2255,10 @@ function bindWindowActions() {
       closeSettingsModal();
       return;
     }
+    const active = document.activeElement;
+    const isTypingTarget =
+      active &&
+      (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable === true);
     if (event.ctrlKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       els.searchInput.focus();
@@ -2089,7 +2277,7 @@ function bindWindowActions() {
     }
     if (event.ctrlKey && event.key.toLowerCase() === "p") {
       event.preventDefault();
-      await window.lookupAPI.printDocument();
+      await openPrintPreview();
       return;
     }
     if (event.key === "F11") {
@@ -2102,28 +2290,42 @@ function bindWindowActions() {
       await window.lookupAPI.setFullScreen(false);
       return;
     }
+    if (
+      isSinglePageFullscreen() &&
+      ["ArrowUp", "ArrowLeft", "PageUp"].includes(event.key) &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !isTypingTarget
+    ) {
+      event.preventDefault();
+      await stepPage(-1, false);
+      return;
+    }
+    if (
+      isSinglePageFullscreen() &&
+      ["ArrowDown", "ArrowRight", "PageDown"].includes(event.key) &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !isTypingTarget
+    ) {
+      event.preventDefault();
+      await stepPage(1, false);
+      return;
+    }
     if (event.key === "PageUp") {
       event.preventDefault();
-      const index = getCurrentDisplayIndex();
-      if (index > 0) {
-        await goToPage(state.pageOrder[index - 1], true);
-      }
+      await stepPage(-1, true);
       return;
     }
     if (event.key === "PageDown") {
       event.preventDefault();
-      const index = getCurrentDisplayIndex();
-      if (index >= 0 && index < state.pageOrder.length - 1) {
-        await goToPage(state.pageOrder[index + 1], true);
-      }
+      await stepPage(1, true);
       return;
     }
     if (event.key === "Delete" && state.pdfDoc && !event.ctrlKey && !event.metaKey) {
-      const active = document.activeElement;
-      const isTyping =
-        active &&
-        (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable === true);
-      if (!isTyping) {
+      if (!isTypingTarget) {
         await deleteCurrentPage();
       }
     }
@@ -2142,18 +2344,12 @@ function bindMainProcessEvents() {
       "open-file": () => openFileDialog(),
       "save-as": () => savePdfAs(),
       "save-overwrite": () => savePdfOverwrite(),
-      print: () => window.lookupAPI.printDocument(),
+      print: () => openPrintPreview(),
       "prev-page": async () => {
-        const index = getCurrentDisplayIndex();
-        if (index > 0) {
-          await goToPage(state.pageOrder[index - 1], true);
-        }
+        await stepPage(-1, true);
       },
       "next-page": async () => {
-        const index = getCurrentDisplayIndex();
-        if (index >= 0 && index < state.pageOrder.length - 1) {
-          await goToPage(state.pageOrder[index + 1], true);
-        }
+        await stepPage(1, true);
       },
       "zoom-in": () => zoomTo(state.scale * 1.12, null, { prioritizeVisible: true }),
       "zoom-out": () => zoomTo(state.scale / 1.12, null, { prioritizeVisible: true }),
@@ -2162,8 +2358,13 @@ function bindMainProcessEvents() {
       "toggle-fullscreen-view-mode": () => toggleFullscreenViewMode(),
       "toggle-thumb-panel": () => toggleLeftPanelVisibility(),
       "toggle-search-panel": () => toggleRightPanelVisibility(),
-      "check-update": () => window.lookupAPI.checkForUpdates(),
-      "install-update": () => window.lookupAPI.installUpdateNow()
+      "check-update": async () => {
+        const ok = await checkForUpdatesFromUI();
+        if (ok) {
+          setStatus(state.language === "en" ? "Update check started." : "업데이트 확인을 시작했습니다.");
+        }
+      },
+      "open-settings": () => openSettingsModal()
     };
     const fn = map[action];
     if (fn) {
@@ -2174,36 +2375,38 @@ function bindMainProcessEvents() {
   });
 
   window.lookupAPI.onFullScreenChanged((isFullScreen) => {
+    const wasFullScreen = state.isFullScreen;
     state.isFullScreen = isFullScreen;
     document.body.classList.toggle("fullscreen", isFullScreen);
 
     if (isFullScreen) {
       state.fullscreenThumbVisible = false;
-      state.fullscreenSearchVisible = false;
+      state.fullScreenAutoFitDone = false;
+      setZoomMode("fit");
       els.fullscreenMiniBar.classList.remove("hidden");
+      els.searchPanel.classList.add("hidden");
     } else {
       els.fullscreenMiniBar.classList.add("hidden");
+      els.searchPanel.classList.toggle("hidden", !state.searchPanelVisible);
     }
 
     applyPanelLayout();
     applyPageVisibility();
     updateToolbarState();
     persistLayoutState();
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        queueLayoutRecoveryRender();
-      });
-    });
+    if (isFullScreen) {
+      queueLayoutRecoveryRender({ forceFit: true });
+    } else {
+      queueLayoutRecoveryRender({ preserveZoom: state.zoomMode === "manual" });
+    }
+    if (isFullScreen || wasFullScreen) {
+      focusViewerPanel();
+    }
   });
 
   window.lookupAPI.onUpdateStatus((payload) => {
     if (!payload?.status) {
       return;
-    }
-    if (payload.status === "downloaded" || payload.status === "installing") {
-      els.installUpdateBtn.classList.remove("hidden");
-    } else if (payload.status === "checking" || payload.status === "downloading" || payload.status === "available") {
-      els.installUpdateBtn.classList.add("hidden");
     }
     if (payload.currentVersion) {
       state.appVersion = payload.currentVersion;
@@ -2280,14 +2483,18 @@ async function init() {
   document.body.classList.toggle("fullscreen", isFullScreen);
   if (isFullScreen) {
     state.fullscreenThumbVisible = false;
-    state.fullscreenSearchVisible = false;
+    state.fullScreenAutoFitDone = false;
+    setZoomMode("fit");
     els.fullscreenMiniBar.classList.remove("hidden");
+    els.searchPanel.classList.add("hidden");
   } else {
     els.fullscreenMiniBar.classList.add("hidden");
+    els.searchPanel.classList.toggle("hidden", !state.searchPanelVisible);
   }
   applyPanelLayout();
   updateFullscreenButtons();
   persistLayoutState();
+  focusViewerPanel();
   showUpdateProgressBar(false);
   setUpdateProgress(0);
   await initializeUpdateStatus();

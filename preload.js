@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld("lookupAPI", {
   confirmOverwrite: (options) => ipcRenderer.invoke("dialog:confirm-overwrite", options),
   readPdfFile: (filePath) => ipcRenderer.invoke("pdf:read-file", filePath),
   writePdfFile: (filePath, data) => ipcRenderer.invoke("pdf:write-file", { filePath, data }),
-  printDocument: () => ipcRenderer.invoke("window:print"),
+  printPreview: (data, fileName) => ipcRenderer.invoke("window:print-preview", { data, fileName }),
   copyText: (text) => ipcRenderer.invoke("clipboard:copy-text", text),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   setLanguage: (language) => ipcRenderer.invoke("settings:set-language", language),
@@ -21,7 +21,6 @@ contextBridge.exposeInMainWorld("lookupAPI", {
   getAppVersion: () => ipcRenderer.invoke("app:get-version"),
 
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
-  installUpdateNow: () => ipcRenderer.invoke("update:install-now"),
   getUpdateConfig: () => ipcRenderer.invoke("update:get-config"),
 
   onSystemOpenFile: (callback) => {

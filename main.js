@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, clipboard } = require("electron");
+﻿const { app, BrowserWindow, Menu, dialog, ipcMain, clipboard, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -21,9 +21,9 @@ const menuText = {
   ko: {
     file: "파일",
     open: "열기...",
-    saveAs: "다른 이름으로 저장...",
+    saveAs: "다른 이름 저장...",
     saveOverwrite: "원본 덮어쓰기 저장",
-    print: "인쇄...",
+    print: "인쇄 미리보기...",
     quit: "종료",
     view: "보기",
     prevPage: "이전 페이지",
@@ -34,17 +34,18 @@ const menuText = {
     fullscreen: "전체화면",
     fullscreenMode: "전체화면 보기 모드 전환",
     thumbToggle: "미리보기 패널 표시/숨김",
+    searchToggle: "검색 패널 표시/숨김",
     darkToggle: "다크모드 전환",
-    update: "업데이트",
-    updateCheck: "업데이트 확인",
-    updateInstall: "다운로드된 업데이트 설치"
+    settings: "설정",
+    openSettings: "설정 열기",
+    updateCheck: "업데이트 확인"
   },
   en: {
     file: "File",
     open: "Open...",
     saveAs: "Save As...",
     saveOverwrite: "Overwrite Original",
-    print: "Print...",
+    print: "Print Preview...",
     quit: "Quit",
     view: "View",
     prevPage: "Previous Page",
@@ -55,10 +56,11 @@ const menuText = {
     fullscreen: "Fullscreen",
     fullscreenMode: "Toggle Fullscreen View Mode",
     thumbToggle: "Toggle Thumbnails",
+    searchToggle: "Toggle Search Panel",
     darkToggle: "Toggle Dark Mode",
-    update: "Update",
-    updateCheck: "Check for Updates",
-    updateInstall: "Install Downloaded Update"
+    settings: "Settings",
+    openSettings: "Open Settings",
+    updateCheck: "Check for Updates"
   }
 };
 
@@ -76,6 +78,8 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 }
+app.setName("lookup");
+app.setAppUserModelId("com.lookup.pdfviewer");
 
 function getFileExtension(filePath) {
   return path.extname(String(filePath || "")).toLowerCase();
@@ -189,11 +193,17 @@ function ensureConvertedDir() {
   return dir;
 }
 
+function ensurePrintPreviewDir() {
+  const dir = path.join(app.getPath("userData"), "print-preview");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function createConvertedPdfPath(sourcePath) {
   const resolved = path.resolve(sourcePath);
   const stat = fs.statSync(resolved);
   const ext = getFileExtension(resolved).replace(".", "");
-  const baseName = path.basename(resolved, path.extname(resolved)).replace(/[^\w.\-가-힣]/g, "_").slice(0, 56);
+  const baseName = path.basename(resolved, path.extname(resolved)).replace(/[^\\w.\\-가-힣]/g, "_").slice(0, 56);
   const signature = `${resolved}|${stat.mtimeMs}|${stat.size}`;
   const digest = crypto.createHash("sha1").update(signature).digest("hex").slice(0, 12);
   return path.join(ensureConvertedDir(), `${baseName}-${ext}-${digest}.pdf`);
@@ -423,7 +433,7 @@ function buildFallbackHtml({ sourcePath, sourceExt, contentText, warningMessage 
 <body>
   <div class="head">
     <p class="title">${safeTitle}</p>
-    <div class="meta">원본 형식: ${safeExt} · lookup 임시 변환 문서</div>
+    <div class="meta">원본 형식: ${safeExt} / lookup 임시 변환 문서</div>
   </div>
   ${warning}
   <pre>${safeBody}</pre>
@@ -548,7 +558,7 @@ async function convertDocumentToPdf(sourcePath) {
         pdfBuffer: await fsp.readFile(targetPdfPath)
       };
     }
-    warningMessage = "고품질 변환 엔진을 찾지 못해 읽기 전용 모드로 변환했습니다.";
+    warningMessage = "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
   } else if (HWP_EXTENSIONS.has(ext)) {
     const hwpResult = convertWithHancomCom(resolved, targetPdfPath);
     if (hwpResult.ok && fs.existsSync(targetPdfPath)) {
@@ -670,6 +680,11 @@ function createMenu() {
           accelerator: "Ctrl+B",
           click: () => sendToRenderer("menu-action", "toggle-thumb-panel")
         },
+        {
+          label: mt("searchToggle"),
+          accelerator: "Ctrl+Shift+B",
+          click: () => sendToRenderer("menu-action", "toggle-search-panel")
+        },
         { type: "separator" },
         {
           label: mt("darkToggle"),
@@ -679,15 +694,15 @@ function createMenu() {
       ]
     },
     {
-      label: mt("update"),
+      label: mt("settings"),
       submenu: [
+        {
+          label: mt("openSettings"),
+          click: () => sendToRenderer("menu-action", "open-settings")
+        },
         {
           label: mt("updateCheck"),
           click: () => sendToRenderer("menu-action", "check-update")
-        },
-        {
-          label: mt("updateInstall"),
-          click: () => sendToRenderer("menu-action", "install-update")
         }
       ]
     }
@@ -706,7 +721,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: false,
     backgroundColor: "#e8edf3",
-    icon: path.join(__dirname, "build", "icon.png"),
+    icon: path.join(__dirname, "build", "icon.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -821,6 +836,8 @@ function setupAutoUpdater() {
     return;
   }
 
+  updateDownloaded = false;
+  updateTargetVersion = "";
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   if (!app.isPackaged) {
@@ -869,7 +886,7 @@ function setupAutoUpdater() {
       stage: "ready-to-install",
       targetVersion: updateTargetVersion,
       percent: 100,
-      message: `업데이트 v${updateTargetVersion} 다운로드 완료. 잠시 후 설치를 시작합니다.`
+      message: `업데이트 v${updateTargetVersion} 다운로드 완료. 설치를 준비합니다.`
     });
 
     if (app.isPackaged) {
@@ -878,10 +895,10 @@ function setupAutoUpdater() {
           stage: "installing",
           targetVersion: updateTargetVersion,
           percent: 100,
-          message: "재시작하여 업데이트를 설치합니다..."
+          message: "앱을 다시 시작해 업데이트를 설치합니다..."
         });
-        autoUpdater.quitAndInstall(false, true);
-      }, 1500);
+        autoUpdater.quitAndInstall(true, true);
+      }, 1200);
     }
   });
 
@@ -901,8 +918,8 @@ async function showOpenDocumentDialog() {
       { name: "지원 문서", extensions: ["pdf", "hwp", "hwpx", "doc", "docx", "xls", "xlsx"] },
       { name: "PDF 문서", extensions: ["pdf"] },
       { name: "한글 문서", extensions: ["hwp", "hwpx"] },
-      { name: "워드 문서", extensions: ["doc", "docx"] },
-      { name: "엑셀 문서", extensions: ["xls", "xlsx"] }
+      { name: "Word 문서", extensions: ["doc", "docx"] },
+      { name: "Excel 문서", extensions: ["xls", "xlsx"] }
     ]
   });
 
@@ -1033,20 +1050,23 @@ ipcMain.handle("window:is-fullscreen", () => {
   return mainWindow?.isFullScreen() ?? false;
 });
 
-ipcMain.handle("window:print", async () => {
-  if (!mainWindow) {
-    return false;
+ipcMain.handle("window:print-preview", async (_event, payload = {}) => {
+  try {
+    const buffer = toBuffer(payload?.data);
+    const rawName = typeof payload?.fileName === "string" ? payload.fileName.trim() : "";
+    const baseName = rawName ? rawName.replace(/[\\/:*?\"<>|]+/g, "_") : "lookup-print-preview.pdf";
+    const fileName = baseName.toLowerCase().endsWith(".pdf") ? baseName : `${baseName}.pdf`;
+    const uniqueName = `${Date.now()}-${fileName}`;
+    const outPath = path.join(ensurePrintPreviewDir(), uniqueName);
+    await fsp.writeFile(outPath, buffer);
+    const openResult = await shell.openPath(outPath);
+    if (openResult) {
+      return { ok: false, message: openResult };
+    }
+    return { ok: true, path: outPath };
+  } catch (error) {
+    return { ok: false, message: error?.message || "인쇄 미리보기를 열지 못했습니다." };
   }
-
-  return new Promise((resolve) => {
-    mainWindow.webContents.print(
-      {
-        silent: false,
-        printBackground: true
-      },
-      (success) => resolve(success)
-    );
-  });
 });
 
 ipcMain.handle("update:check", async () => {
@@ -1061,22 +1081,6 @@ ipcMain.handle("update:check", async () => {
   }
 });
 
-ipcMain.handle("update:install-now", async () => {
-  if (!updateDownloaded) {
-    return { ok: false, message: "다운로드된 업데이트가 없습니다." };
-  }
-  setImmediate(() => {
-    sendUpdateStatus("installing", {
-      stage: "installing",
-      targetVersion: updateTargetVersion,
-      percent: 100,
-      message: "재시작하여 업데이트를 설치합니다..."
-    });
-    autoUpdater.quitAndInstall(false, true);
-  });
-  return { ok: true };
-});
-
 ipcMain.handle("update:get-config", async () => {
   return {
     enabled: Boolean(updateConfig),
@@ -1086,6 +1090,8 @@ ipcMain.handle("update:get-config", async () => {
     targetVersion: updateTargetVersion || ""
   };
 });
+
+ipcMain.handle("app:get-version", async () => app.getVersion());
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
@@ -1135,3 +1141,11 @@ if (gotSingleInstanceLock) {
     }
   });
 }
+
+
+
+
+
+
+
+
