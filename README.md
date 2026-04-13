@@ -35,26 +35,3 @@ npm run dist
 npm install
 npm start
 ```
-
-## 자동 업데이트 (GitHub Release)
-
-1. `update-config.json`에 저장소 정보 입력
-2. 앱 버전(예: `1.1.0`) 올리고 새 설치 파일 빌드
-3. GitHub 릴리즈에 아래 파일 업로드
-   - `lookup-Setup-x.y.z.exe`
-   - `latest.yml`
-   - `*.blockmap`
-
-`update-config.json` 예시:
-
-```json
-{
-  "owner": "깃허브아이디",
-  "repo": "저장소이름"
-}
-```
-
-## 제거
-
-- Windows `설정 > 앱 > 설치된 앱`에서 `lookup` 제거
-- 또는 시작 메뉴의 `lookup Uninstall` 실행
