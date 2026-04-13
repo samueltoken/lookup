@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 const { parseOffice } = require("officeparser");
 const WordExtractor = require("word-extractor");
 const XLSX = require("xlsx");
+const hwpjs = require("@ohah/hwpjs");
 const { read: readHwpxDocument } = require("hwpx-js");
 
 let mainWindow = null;
@@ -37,8 +38,11 @@ const menuText = {
     searchToggle: "검색 패널 표시/숨김",
     darkToggle: "다크모드 전환",
     settings: "설정",
-    openSettings: "설정 열기",
-    updateCheck: "업데이트 확인"
+    language: "언어",
+    languageKo: "한국어",
+    languageEn: "English",
+    updateCheck: "업데이트 확인",
+    copyDeveloperContact: "개발자 문의 이메일 복사"
   },
   en: {
     file: "File",
@@ -59,8 +63,11 @@ const menuText = {
     searchToggle: "Toggle Search Panel",
     darkToggle: "Toggle Dark Mode",
     settings: "Settings",
-    openSettings: "Open Settings",
-    updateCheck: "Check for Updates"
+    language: "Language",
+    languageKo: "Korean",
+    languageEn: "English",
+    updateCheck: "Check for Updates",
+    copyDeveloperContact: "Copy Developer Email"
   }
 };
 
@@ -185,6 +192,18 @@ function saveSettings() {
   } catch (_error) {
     // settings save failure is non-fatal
   }
+}
+
+function getWindowIconPath() {
+  const packagedIconPath = path.join(process.resourcesPath || "", "icon.ico");
+  if (app.isPackaged && fs.existsSync(packagedIconPath)) {
+    return packagedIconPath;
+  }
+  const devIconPath = path.join(__dirname, "build", "icon.ico");
+  if (fs.existsSync(devIconPath)) {
+    return devIconPath;
+  }
+  return undefined;
 }
 
 function ensureConvertedDir() {
@@ -408,6 +427,59 @@ function extractHwpFamilyText(filePath) {
   }
 }
 
+function extractHwpLegacyText(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath);
+    const markdownResult = hwpjs.toMarkdown(raw);
+    if (typeof markdownResult === "string") {
+      return normalizeText(markdownResult);
+    }
+    if (markdownResult && typeof markdownResult.markdown === "string") {
+      return normalizeText(markdownResult.markdown);
+    }
+    return "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function normalizeHwpHtmlDocument(html, title) {
+  const raw = String(html || "").trim();
+  const safeTitle = escapeHtml(title || "lookup HWP");
+  if (!raw) {
+    return "";
+  }
+  if (/<!doctype/i.test(raw)) {
+    return raw;
+  }
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>${safeTitle}</title>
+</head>
+<body>
+${raw}
+</body>
+</html>`;
+}
+
+async function convertHwpToPdfWithHwpJs(sourcePath, outputPdfPath) {
+  try {
+    const raw = fs.readFileSync(sourcePath);
+    const htmlRaw = hwpjs.toHtml(raw);
+    const html = normalizeHwpHtmlDocument(htmlRaw, path.basename(sourcePath));
+    if (!html) {
+      return { ok: false, reason: "hwpjs_html_empty" };
+    }
+    const pdfBuffer = await htmlToPdfBuffer(html);
+    await fsp.writeFile(outputPdfPath, pdfBuffer);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error?.message || "hwpjs_convert_failed" };
+  }
+}
+
 function buildFallbackHtml({ sourcePath, sourceExt, contentText, warningMessage }) {
   const safeTitle = escapeHtml(path.basename(sourcePath));
   const safeExt = escapeHtml(sourceExt.replace(".", "").toUpperCase());
@@ -487,7 +559,14 @@ async function extractDocumentTextForFallback(filePath, ext) {
     }
     return extractOfficeAstText(filePath);
   }
-  if (HWP_EXTENSIONS.has(ext)) {
+  if (ext === ".hwp") {
+    const legacy = extractHwpLegacyText(filePath);
+    if (legacy) {
+      return legacy;
+    }
+    return extractHwpFamilyText(filePath);
+  }
+  if (ext === ".hwpx") {
     return extractHwpFamilyText(filePath);
   }
   return "";
@@ -568,6 +647,18 @@ async function convertDocumentToPdf(sourcePath) {
         converted: true,
         convertMode: "hwp-layout",
         warningMessage: "",
+        pdfPath: targetPdfPath,
+        pdfBuffer: await fsp.readFile(targetPdfPath)
+      };
+    }
+    const hwpJsResult = await convertHwpToPdfWithHwpJs(resolved, targetPdfPath);
+    if (hwpJsResult.ok && fs.existsSync(targetPdfPath)) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "hwpjs-html",
+        warningMessage: "원본 변환 엔진을 찾지 못해 호환 보기 모드로 열었습니다.",
         pdfPath: targetPdfPath,
         pdfBuffer: await fsp.readFile(targetPdfPath)
       };
@@ -697,12 +788,30 @@ function createMenu() {
       label: mt("settings"),
       submenu: [
         {
-          label: mt("openSettings"),
-          click: () => sendToRenderer("menu-action", "open-settings")
+          label: mt("language"),
+          submenu: [
+            {
+              label: mt("languageKo"),
+              type: "radio",
+              checked: appSettings.language !== "en",
+              click: () => sendToRenderer("menu-action", "set-language-ko")
+            },
+            {
+              label: mt("languageEn"),
+              type: "radio",
+              checked: appSettings.language === "en",
+              click: () => sendToRenderer("menu-action", "set-language-en")
+            }
+          ]
         },
+        { type: "separator" },
         {
           label: mt("updateCheck"),
           click: () => sendToRenderer("menu-action", "check-update")
+        },
+        {
+          label: mt("copyDeveloperContact"),
+          click: () => sendToRenderer("menu-action", "copy-developer-email")
         }
       ]
     }
@@ -712,6 +821,7 @@ function createMenu() {
 }
 
 function createWindow() {
+  const iconPath = getWindowIconPath();
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 940,
@@ -721,7 +831,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: false,
     backgroundColor: "#e8edf3",
-    icon: path.join(__dirname, "build", "icon.ico"),
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1048,6 +1158,15 @@ ipcMain.handle("window:set-fullscreen", (_event, enabled) => {
 
 ipcMain.handle("window:is-fullscreen", () => {
   return mainWindow?.isFullScreen() ?? false;
+});
+
+ipcMain.handle("window:set-title", async (_event, title) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  const nextTitle = typeof title === "string" && title.trim() ? title.trim() : "lookup";
+  mainWindow.setTitle(nextTitle);
+  return true;
 });
 
 ipcMain.handle("window:print-preview", async (_event, payload = {}) => {

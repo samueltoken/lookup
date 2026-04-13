@@ -3,7 +3,9 @@
 !ifndef BUILD_UNINSTALLER
   !macro customInstall
     ; Shortcut/icon refresh to avoid stale Electron cache.
+    Delete "$DESKTOP\lookup*.lnk"
     Delete "$DESKTOP\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup*.lnk"
     Delete "$SMPROGRAMS\lookup.lnk"
     Delete "$SMPROGRAMS\lookup\lookup.lnk"
 

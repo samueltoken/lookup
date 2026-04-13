@@ -66,10 +66,10 @@ const i18n = {
     fullscreenModeContinuous: "전체화면: 연속 스크롤",
     fullscreenModeSingle: "전체화면: 현재 페이지",
     searchResults: "검색 결과",
-    settingsTitle: "설정",
-    languageLabel: "언어",
-    contactDeveloper: "개발자 문의 (이메일 복사)",
     copiedContact: "개발자 이메일이 복사되었습니다.",
+    languageChangedKo: "언어가 한국어로 변경되었습니다.",
+    languageChangedEn: "언어가 English로 변경되었습니다.",
+    updateStarted: "업데이트 확인을 시작했습니다.",
     versionCurrent: "현재 버전",
     versionTarget: "대상 버전",
     searchCount: "결과 {count}개",
@@ -114,10 +114,10 @@ const i18n = {
     fullscreenModeContinuous: "Fullscreen: Continuous",
     fullscreenModeSingle: "Fullscreen: Single Page",
     searchResults: "Search Results",
-    settingsTitle: "Settings",
-    languageLabel: "Language",
-    contactDeveloper: "Contact Developer (copy email)",
     copiedContact: "Developer email copied to clipboard.",
+    languageChangedKo: "Language switched to Korean.",
+    languageChangedEn: "Language switched to English.",
+    updateStarted: "Update check started.",
     versionCurrent: "Current Version",
     versionTarget: "Target Version",
     searchCount: "Results {count}",
@@ -240,14 +240,7 @@ const els = {
   targetVersionLabel: document.getElementById("targetVersionLabel"),
   updateProgressWrap: document.getElementById("updateProgressWrap"),
   updateProgressBar: document.getElementById("updateProgressBar"),
-  updateProgressText: document.getElementById("updateProgressText"),
-  settingsBtn: document.getElementById("settingsBtn"),
-  settingsModal: document.getElementById("settingsModal"),
-  closeSettingsBtn: document.getElementById("closeSettingsBtn"),
-  languageSelect: document.getElementById("languageSelect"),
-  settingsCheckUpdateBtn: document.getElementById("settingsCheckUpdateBtn"),
-  contactDeveloperBtn: document.getElementById("contactDeveloperBtn"),
-  settingsMessage: document.getElementById("settingsMessage")
+  updateProgressText: document.getElementById("updateProgressText")
 };
 
 function toUint8Array(raw) {
@@ -292,18 +285,10 @@ function applyLanguageToStaticTexts() {
       }
       el.setAttribute("placeholder", t(key));
     });
-    if (els.languageSelect) {
-      els.languageSelect.value = state.language;
-    }
     if (els.printBtn) {
       const label = state.language === "en" ? "Print" : "인쇄";
       els.printBtn.setAttribute("aria-label", label);
       els.printBtn.setAttribute("title", `${label} (Ctrl+P)`);
-    }
-    if (els.settingsBtn) {
-      const label = state.language === "en" ? "Settings" : "설정";
-      els.settingsBtn.setAttribute("aria-label", label);
-      els.settingsBtn.setAttribute("title", label);
     }
     updateSearchCountText();
     updateVersionLabels();
@@ -369,6 +354,19 @@ function fileNameFromPath(filePath) {
     return "";
   }
   return filePath.replaceAll("\\", "/").split("/").pop() || filePath;
+}
+
+function buildWindowTitle(filePath) {
+  const name = fileNameFromPath(filePath);
+  return name ? `lookup - ${name}` : "lookup";
+}
+
+async function syncWindowTitle(filePath = "") {
+  try {
+    await window.lookupAPI.setWindowTitle(buildWindowTitle(filePath));
+  } catch (_error) {
+    // non-fatal
+  }
 }
 
 function makeDefaultSavePath(currentPath) {
@@ -524,16 +522,6 @@ function updateToolbarState() {
   els.zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
 
   updateFullscreenButtons();
-}
-
-function openSettingsModal() {
-  els.settingsModal.classList.remove("hidden");
-  els.settingsMessage.textContent = "";
-  els.languageSelect.value = state.language;
-}
-
-function closeSettingsModal() {
-  els.settingsModal.classList.add("hidden");
 }
 
 function updateActiveThumbnail() {
@@ -907,15 +895,25 @@ async function goToPage(pageNum, smooth = false) {
     view.wrap.scrollIntoView({
       behavior: smooth ? "smooth" : "auto",
       block: "center",
-      inline: "nearest"
+      inline: "center"
     });
+    alignCurrentPageToViewerCenter();
     return;
   }
   view.wrap.scrollIntoView({
     behavior: smooth ? "smooth" : "auto",
     block: "center",
-    inline: "nearest"
+    inline: "center"
   });
+}
+
+function alignCurrentPageToViewerCenter() {
+  const view = state.pageViews.get(state.currentPage);
+  if (!view) {
+    return;
+  }
+  const left = Math.max(0, view.wrap.offsetLeft + view.wrap.offsetWidth / 2 - els.viewerPanel.clientWidth / 2);
+  els.viewerPanel.scrollLeft = left;
 }
 
 function updateCurrentPageByScroll() {
@@ -1036,6 +1034,8 @@ function queueLayoutRecoveryRender(options = {}) {
     if (shouldApplyFullscreenFit(options)) {
       await fitCurrentPageToViewport();
       await goToPage(state.currentPage, false);
+    } else if (isSinglePageFullscreen()) {
+      alignCurrentPageToViewerCenter();
     }
     if (state.isFullScreen) {
       focusViewerPanel();
@@ -1347,9 +1347,6 @@ async function ensureTextItems(pageNum) {
   const page = await getPdfPage(pageNum);
   const textContent = await page.getTextContent();
   const items = [];
-  const collapsedParts = [];
-  let cursor = 0;
-
   for (const item of textContent.items) {
     const displayText = String(item.str || "").replace(/\s+/g, " ").trim();
     if (!displayText) {
@@ -1357,14 +1354,10 @@ async function ensureTextItems(pageNum) {
     }
 
     const lowered = displayText.toLowerCase();
-    const searchable = lowered.replace(/\s+/g, "");
+    const searchable = lowered;
     if (!searchable) {
       continue;
     }
-
-    const searchStart = cursor;
-    const searchEnd = searchStart + searchable.length;
-    cursor = searchEnd;
 
     items.push({
       index: items.length,
@@ -1372,15 +1365,11 @@ async function ensureTextItems(pageNum) {
       lower: lowered,
       searchable,
       searchableLength: searchable.length,
-      searchStart,
-      searchEnd,
       width: item.width || 0,
       transform: item.transform
     });
-    collapsedParts.push(searchable);
   }
 
-  state.searchPageCache.set(pageNum, collapsedParts.join(""));
   state.textItemsCache.set(pageNum, items);
   return items;
 }
@@ -1460,7 +1449,7 @@ async function scrollActiveMatchToCenter(match) {
 
 async function performSearch(rawQuery, jumpFirst = true) {
   const query = normalizeSearchText(rawQuery);
-  const queryNeedle = query.replace(/\s+/g, "");
+  const queryNeedle = query.toLowerCase();
   state.searchQuery = query;
   state.searchMatches = [];
   state.perPageMatchIndexes = new Map();
@@ -1480,55 +1469,43 @@ async function performSearch(rawQuery, jumpFirst = true) {
   setStatus(state.language === "en" ? "Searching..." : "검색 중...");
   for (const pageNum of state.pageOrder) {
     const items = await ensureTextItems(pageNum);
-    const pageSearchText = state.searchPageCache.get(pageNum) || "";
-    if (!pageSearchText) {
+    if (!items.length) {
       continue;
     }
-    let from = 0;
-    while (from < pageSearchText.length) {
-      const found = pageSearchText.indexOf(queryNeedle, from);
-      if (found < 0) {
-        break;
-      }
-      const foundEnd = found + queryNeedle.length;
-      const hitItemIndexes = [];
-      const segments = [];
-      for (const item of items) {
-        if (item.searchEnd <= found) {
-          continue;
-        }
-        if (item.searchStart >= foundEnd) {
-          break;
-        }
-        const overlapStart = Math.max(found, item.searchStart);
-        const overlapEnd = Math.min(foundEnd, item.searchEnd);
-        if (overlapEnd <= overlapStart) {
-          continue;
-        }
-        hitItemIndexes.push(item.index);
-        segments.push({
-          itemIndex: item.index,
-          startOffset: overlapStart - item.searchStart,
-          endOffset: overlapEnd - item.searchStart
-        });
-      }
-      if (!hitItemIndexes.length || !segments.length) {
-        from = found + 1;
+    for (const item of items) {
+      const text = item.searchable || "";
+      if (!text) {
         continue;
       }
-      const preview = buildSearchPreview(items, hitItemIndexes);
-      const matchIndex = state.searchMatches.length;
-      state.searchMatches.push({
-        pageNum,
-        itemIndexes: hitItemIndexes,
-        segments,
-        text: preview || "(검색 결과)"
-      });
-      if (!state.perPageMatchIndexes.has(pageNum)) {
-        state.perPageMatchIndexes.set(pageNum, []);
+      let from = 0;
+      while (from < text.length) {
+        const found = text.indexOf(queryNeedle, from);
+        if (found < 0) {
+          break;
+        }
+        const foundEnd = found + queryNeedle.length;
+        const hitItemIndexes = [item.index];
+        const segments = [
+          {
+            itemIndex: item.index,
+            startOffset: found,
+            endOffset: foundEnd
+          }
+        ];
+        const preview = buildSearchPreview(items, hitItemIndexes);
+        const matchIndex = state.searchMatches.length;
+        state.searchMatches.push({
+          pageNum,
+          itemIndexes: hitItemIndexes,
+          segments,
+          text: preview || "(검색 결과)"
+        });
+        if (!state.perPageMatchIndexes.has(pageNum)) {
+          state.perPageMatchIndexes.set(pageNum, []);
+        }
+        state.perPageMatchIndexes.get(pageNum).push(matchIndex);
+        from = found + Math.max(1, queryNeedle.length);
       }
-      state.perPageMatchIndexes.get(pageNum).push(matchIndex);
-      from = found + Math.max(1, queryNeedle.length);
     }
   }
 
@@ -1734,7 +1711,7 @@ function handleViewerWheel(event) {
     return;
   }
   const delta = normalizeWheelDelta(event);
-  if (Math.abs(delta) < 8) {
+  if (Math.abs(delta) < 1.2) {
     return;
   }
   const now = Date.now();
@@ -1984,6 +1961,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.fullScreenAutoFitDone = false;
   state.currentPage = 1;
   state.saveDirty = false;
+  await syncWindowTitle(filePath || "");
 
   els.emptyHint.classList.add("hidden");
   await rebuildPageViews();
@@ -2040,7 +2018,9 @@ function toggleLeftPanelVisibility() {
   }
   applyPanelLayout();
   persistLayoutState();
-  queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen });
+  queueLayoutRecoveryRender({
+    forceFit: state.isFullScreen && state.zoomMode !== "manual"
+  });
 }
 
 function toggleRightPanelVisibility() {
@@ -2096,7 +2076,9 @@ function handlePanelResizeStart(side, startEvent) {
     window.removeEventListener("pointerup", onFinish);
     window.removeEventListener("pointercancel", onFinish);
     persistLayoutState();
-    queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen });
+    queueLayoutRecoveryRender({
+      forceFit: state.isFullScreen && side === "left" && state.zoomMode !== "manual"
+    });
     if (event) {
       event.preventDefault();
     }
@@ -2187,32 +2169,6 @@ function bindToolbarActions() {
   els.toggleDarkBtn.addEventListener("click", () => {
     setDarkMode(!document.body.classList.contains("dark"));
   });
-  els.settingsBtn.addEventListener("click", () => {
-    openSettingsModal();
-  });
-  els.closeSettingsBtn.addEventListener("click", () => {
-    closeSettingsModal();
-  });
-  els.settingsModal.addEventListener("click", (event) => {
-    if (event.target instanceof HTMLElement && event.target.dataset.closeModal === "1") {
-      closeSettingsModal();
-    }
-  });
-  els.languageSelect.addEventListener("change", async () => {
-    await setLanguage(els.languageSelect.value, true);
-    els.settingsMessage.textContent = "";
-  });
-  els.contactDeveloperBtn.addEventListener("click", async () => {
-    await window.lookupAPI.copyText("lamsaiku65@gmail.com");
-    els.settingsMessage.textContent = t("copiedContact");
-    setStatus(t("copiedContact"));
-  });
-  els.settingsCheckUpdateBtn.addEventListener("click", async () => {
-    const ok = await checkForUpdatesFromUI();
-    if (ok) {
-      setStatus(state.language === "en" ? "Update check started." : "업데이트 확인을 시작했습니다.");
-    }
-  });
 
   els.toggleFullscreenBtn.addEventListener("click", () => {
     window.lookupAPI.toggleFullScreen();
@@ -2251,10 +2207,6 @@ function bindWindowActions() {
   });
 
   window.addEventListener("keydown", async (event) => {
-    if (event.key === "Escape" && !els.settingsModal.classList.contains("hidden")) {
-      closeSettingsModal();
-      return;
-    }
     const active = document.activeElement;
     const isTypingTarget =
       active &&
@@ -2361,10 +2313,21 @@ function bindMainProcessEvents() {
       "check-update": async () => {
         const ok = await checkForUpdatesFromUI();
         if (ok) {
-          setStatus(state.language === "en" ? "Update check started." : "업데이트 확인을 시작했습니다.");
+          setStatus(t("updateStarted"));
         }
       },
-      "open-settings": () => openSettingsModal()
+      "copy-developer-email": async () => {
+        await window.lookupAPI.copyText("lamsaiku65@gmail.com");
+        setStatus(t("copiedContact"));
+      },
+      "set-language-ko": async () => {
+        await setLanguage("ko", true);
+        setStatus(t("languageChangedKo"));
+      },
+      "set-language-en": async () => {
+        await setLanguage("en", true);
+        setStatus(t("languageChangedEn"));
+      }
     };
     const fn = map[action];
     if (fn) {
@@ -2497,6 +2460,7 @@ async function init() {
   focusViewerPanel();
   showUpdateProgressBar(false);
   setUpdateProgress(0);
+  await syncWindowTitle("");
   await initializeUpdateStatus();
 }
 

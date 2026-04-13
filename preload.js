@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("lookupAPI", {
   toggleFullScreen: () => ipcRenderer.invoke("window:toggle-fullscreen"),
   setFullScreen: (enabled) => ipcRenderer.invoke("window:set-fullscreen", enabled),
   isFullScreen: () => ipcRenderer.invoke("window:is-fullscreen"),
+  setWindowTitle: (title) => ipcRenderer.invoke("window:set-title", title),
   getAppVersion: () => ipcRenderer.invoke("app:get-version"),
 
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
