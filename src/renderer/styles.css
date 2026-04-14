@@ -10,6 +10,8 @@
   --left-panel-width: 250px;
   --right-panel-width: 280px;
   --resizer-width: 8px;
+  --left-resizer-width: 8px;
+  --right-resizer-width: 8px;
 }
 
 * {
@@ -239,19 +241,10 @@ body {
   display: grid;
   grid-template-columns:
     var(--left-panel-width)
-    var(--resizer-width)
+    var(--left-resizer-width)
     minmax(0, 1fr)
-    var(--resizer-width)
+    var(--right-resizer-width)
     var(--right-panel-width);
-}
-
-.workspace.left-collapsed {
-  --left-panel-width: 0px;
-  --resizer-width: 8px;
-}
-
-.workspace.right-collapsed {
-  --right-panel-width: 0px;
 }
 
 .workspace.left-collapsed .thumb-panel,
