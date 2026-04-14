@@ -3,6 +3,7 @@ const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const { spawnSync } = require("node:child_process");
@@ -32,7 +33,7 @@ const menuText = {
     open: "열기...",
     saveAs: "다른 이름 저장...",
     saveOverwrite: "원본 덮어쓰기 저장",
-    print: "인쇄 미리보기...",
+    print: "인쇄...",
     quit: "종료",
     view: "보기",
     prevPage: "이전 페이지",
@@ -57,7 +58,7 @@ const menuText = {
     open: "Open...",
     saveAs: "Save As...",
     saveOverwrite: "Overwrite Original",
-    print: "Print Preview...",
+    print: "Print...",
     quit: "Quit",
     view: "View",
     prevPage: "Previous Page",
@@ -259,6 +260,77 @@ function ensurePrintPreviewDir() {
   const dir = path.join(app.getPath("userData"), "print-preview");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+async function openSystemPrintDialog(pdfBuffer, suggestedName = "lookup-print.pdf") {
+  const rawName = String(suggestedName || "").trim();
+  const baseName = rawName ? rawName.replace(/[\\/:*?"<>|]+/g, "_") : "lookup-print.pdf";
+  const fileName = baseName.toLowerCase().endsWith(".pdf") ? baseName : `${baseName}.pdf`;
+  const uniqueName = `${Date.now()}-${fileName}`;
+  const outPath = path.join(ensurePrintPreviewDir(), uniqueName);
+  await fsp.writeFile(outPath, pdfBuffer);
+
+  const printWindow = new BrowserWindow({
+    show: false,
+    width: 1100,
+    height: 1400,
+    autoHideMenuBar: true,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (!printWindow.isDestroyed()) {
+        printWindow.close();
+      }
+      resolve(result);
+    };
+
+    const timeoutId = setTimeout(() => {
+      finish({ ok: false, message: "인쇄 대화상자를 열지 못했습니다. 잠시 후 다시 시도해 주세요." });
+    }, 20000);
+
+    printWindow.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
+      clearTimeout(timeoutId);
+      finish({
+        ok: false,
+        message: `인쇄 문서를 불러오지 못했습니다. (${errorDescription || errorCode || "load-failed"})`
+      });
+    });
+
+    printWindow.webContents.once("did-finish-load", () => {
+      setTimeout(() => {
+        printWindow.webContents.print(
+          {
+            silent: false,
+            printBackground: true
+          },
+          (success, failureReason) => {
+            clearTimeout(timeoutId);
+            if (!success) {
+              finish({ ok: false, message: failureReason || "인쇄 대화상자를 열지 못했습니다." });
+              return;
+            }
+            finish({ ok: true, path: outPath });
+          }
+        );
+      }, 220);
+    });
+
+    printWindow.loadURL(pathToFileURL(outPath).toString()).catch((error) => {
+      clearTimeout(timeoutId);
+      finish({ ok: false, message: error?.message || "인쇄 준비 중 오류가 발생했습니다." });
+    });
+  });
 }
 
 function getUpdateMarkerFilePath() {
@@ -1635,6 +1707,17 @@ ipcMain.handle("update:check", async () => {
   } catch (error) {
     setUpdateBusy(false);
     return { ok: false, message: error?.message || "업데이트 확인 실패" };
+  }
+});
+
+ipcMain.handle("window:print-document", async (_event, payload = {}) => {
+  try {
+    const buffer = toBuffer(payload?.data);
+    const rawName = typeof payload?.fileName === "string" ? payload.fileName.trim() : "";
+    const baseName = rawName ? rawName.replace(/[\\/:*?\"<>|]+/g, "_") : "lookup-print.pdf";
+    return await openSystemPrintDialog(buffer, baseName);
+  } catch (error) {
+    return { ok: false, message: error?.message || "인쇄를 시작하지 못했습니다." };
   }
 });
 

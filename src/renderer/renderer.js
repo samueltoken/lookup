@@ -69,6 +69,8 @@ const i18n = {
     ribbonGroupLanguage: "언어",
     prev: "이전",
     next: "다음",
+    zoomIn: "확대",
+    zoomOut: "축소",
     zoomReset: "원래 크기",
     rotateLeft: "왼쪽 회전",
     rotateRight: "오른쪽 회전",
@@ -117,9 +119,9 @@ const i18n = {
     updateReady: "업데이트 연동 준비됨",
     updateDisabled: "업데이트 비활성: 저장소 설정을 찾지 못했습니다.",
     updateChecking: "업데이트를 확인하고 있습니다...",
-    printPreparing: "인쇄 미리보기를 준비하고 있습니다...",
-    printOpened: "인쇄 미리보기를 열었습니다.",
-    printFailed: "인쇄 미리보기를 열지 못했습니다.",
+    printPreparing: "인쇄 대화상자를 준비하고 있습니다...",
+    printOpened: "인쇄 대화상자를 열었습니다.",
+    printFailed: "인쇄를 시작하지 못했습니다.",
     ocrSearching: "이미지 문서에서 글자를 찾고 있습니다...",
     ocrFailed: "OCR 인식에 실패해 텍스트 검색만 사용합니다.",
     textMemoHint: "메모 입력",
@@ -170,6 +172,8 @@ const i18n = {
     ribbonGroupLanguage: "Language",
     prev: "Prev",
     next: "Next",
+    zoomIn: "Zoom In",
+    zoomOut: "Zoom Out",
     zoomReset: "Reset",
     rotateLeft: "Rotate Left",
     rotateRight: "Rotate Right",
@@ -218,9 +222,9 @@ const i18n = {
     updateReady: "Update connected",
     updateDisabled: "Update disabled: repository info not found.",
     updateChecking: "Checking for updates...",
-    printPreparing: "Preparing print preview...",
-    printOpened: "Print preview opened.",
-    printFailed: "Unable to open print preview.",
+    printPreparing: "Preparing print dialog...",
+    printOpened: "Print dialog opened.",
+    printFailed: "Unable to start printing.",
     ocrSearching: "Scanning image pages with OCR...",
     ocrFailed: "OCR failed. Using text-layer search only.",
     textMemoHint: "Enter memo",
@@ -259,6 +263,47 @@ function t(key, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_all, name) => String(vars[name] ?? ""));
 }
 
+const ICON_SVG = {
+  print:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V4h10v4"/><rect x="6" y="13" width="12" height="7" rx="1.5"/><path d="M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5V10a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5.5a1.5 1.5 0 0 1-1.5 1.5H18"/><circle cx="17.5" cy="10.5" r="0.8" fill="currentColor" stroke="none"/></svg>',
+  thumbnailShow:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="6" height="16" rx="1.5"/><rect x="11.5" y="4" width="9" height="7" rx="1.5"/><rect x="11.5" y="13" width="9" height="7" rx="1.5"/></svg>',
+  thumbnailHide:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="6" height="16" rx="1.5"/><rect x="11.5" y="4" width="9" height="7" rx="1.5"/><rect x="11.5" y="13" width="9" height="7" rx="1.5"/><path d="M4 20 20 4"/></svg>',
+  searchShow:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M20 5v4"/><path d="M18 7h4"/></svg>',
+  searchHide:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M4 20 20 4"/></svg>',
+  fullscreenEnter:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></svg>',
+  fullscreenExit:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4"/><path d="M15 4v5h5"/><path d="M9 20v-5H4"/><path d="M15 20v-5h5"/></svg>',
+  darkMode:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 3.5a8.5 8.5 0 1 0 6 14.5A9 9 0 1 1 14.5 3.5Z"/></svg>',
+  lightMode:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2"/><path d="M12 19.3v2.2"/><path d="M2.5 12h2.2"/><path d="M19.3 12h2.2"/><path d="m5.4 5.4 1.6 1.6"/><path d="m17 17 1.6 1.6"/><path d="m17 7 1.6-1.6"/><path d="m5.4 18.6 1.6-1.6"/></svg>',
+  rotateLeft:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6H4v4"/><path d="M4 10A8 8 0 1 0 7 4.2"/><path d="m12 8-2 4h4l-2 4"/></svg>',
+  rotateRight:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 6h4v4"/><path d="M20 10A8 8 0 1 1 17 4.2"/><path d="m12 8-2 4h4l-2 4"/></svg>',
+  undo:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H4v5"/><path d="M4 12a8 8 0 0 1 14.7-4"/><path d="M18.7 8 20 6.7"/></svg>',
+  redo:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7h5v5"/><path d="M20 12a8 8 0 0 0-14.7-4"/><path d="M5.3 8 4 6.7"/></svg>',
+  delete:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4.8h6V7"/><rect x="6.5" y="7" width="11" height="13" rx="1.5"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>',
+  zoomIn:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M10.5 8v5"/><path d="M8 10.5h5"/></svg>',
+  zoomOut:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M8 10.5h5"/></svg>',
+  zoomReset:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z"/></svg>'
+};
+
+function getIconSvg(name) {
+  return ICON_SVG[name] || "";
+}
+
 const state = {
   pdfDoc: null,
   sourceBytes: null,
@@ -281,6 +326,7 @@ const state = {
   ocrWorkerReady: false,
   ocrErrorShown: false,
   scale: 1,
+  lastValidScale: 1,
   currentPage: 1,
   editingMode: "view",
   drawing: null,
@@ -582,19 +628,7 @@ function applyLanguageToStaticTexts() {
       }
       el.setAttribute("placeholder", t(key));
     });
-    if (els.printBtn) {
-      const label = state.language === "en" ? "Print" : "인쇄";
-      els.printBtn.setAttribute("aria-label", label);
-      els.printBtn.setAttribute("title", `${label} (Ctrl+P)`);
-    }
-    if (els.undoBtn) {
-      els.undoBtn.setAttribute("aria-label", t("undo"));
-      els.undoBtn.setAttribute("title", `${t("undo")} (Ctrl+Z)`);
-    }
-    if (els.redoBtn) {
-      els.redoBtn.setAttribute("aria-label", t("redo"));
-      els.redoBtn.setAttribute("title", `${t("redo")} (Ctrl+Y)`);
-    }
+    applyActionButtonIcons();
     if (els.textMemoInput) {
       els.textMemoInput.setAttribute("placeholder", t("textMemoHint"));
     }
@@ -790,18 +824,43 @@ function applySavedDarkMode() {
   setDarkMode(localStorage.getItem(storage.darkMode) === "1");
 }
 
-function setIconButtonVisual(button, iconText, labelText) {
+function setIconButtonVisual(button, iconName, labelText) {
   if (!button) {
     return;
   }
   const iconEl = button.querySelector(".button-icon");
+  const iconSvg = getIconSvg(iconName);
   if (iconEl) {
-    iconEl.textContent = iconText;
+    iconEl.innerHTML = iconSvg;
   } else {
-    button.textContent = iconText;
+    button.innerHTML = `<span class="button-icon" aria-hidden="true">${iconSvg}</span>`;
   }
   button.setAttribute("aria-label", labelText);
   button.setAttribute("title", labelText);
+  button.classList.add("icon-button", "icon-only");
+}
+
+function setLabeledButtonIcon(button, iconName) {
+  if (!button) {
+    return;
+  }
+  const labelText = button.textContent.trim();
+  const iconSvg = getIconSvg(iconName);
+  button.innerHTML = `<span class="button-icon" aria-hidden="true">${iconSvg}</span><span class="button-label">${labelText}</span>`;
+  button.classList.add("with-inline-icon");
+}
+
+function applyActionButtonIcons() {
+  const printLabel = state.language === "en" ? "Print" : "인쇄";
+  setIconButtonVisual(els.printBtn, "print", `${printLabel} (Ctrl+P)`);
+  setIconButtonVisual(els.undoBtn, "undo", `${t("undo")} (Ctrl+Z)`);
+  setIconButtonVisual(els.redoBtn, "redo", `${t("redo")} (Ctrl+Y)`);
+  setLabeledButtonIcon(els.rotateLeftBtn, "rotateLeft");
+  setLabeledButtonIcon(els.rotateRightBtn, "rotateRight");
+  setLabeledButtonIcon(els.deletePageBtn, "delete");
+  setLabeledButtonIcon(els.zoomResetBtn, "zoomReset");
+  setIconButtonVisual(els.zoomInBtn, "zoomIn", t("zoomIn"));
+  setIconButtonVisual(els.zoomOutBtn, "zoomOut", t("zoomOut"));
 }
 
 function updateViewActionButtons() {
@@ -811,27 +870,27 @@ function updateViewActionButtons() {
 
   setIconButtonVisual(
     els.toggleThumbPanelBtn,
-    leftVisible ? "🗂" : "📑",
+    leftVisible ? "thumbnailHide" : "thumbnailShow",
     leftVisible ? t("thumbToggleHideTip") : t("thumbToggleShowTip")
   );
   setIconButtonVisual(
     els.toggleSearchPanelBtn,
-    rightVisible ? "🧾" : "🔎",
+    rightVisible ? "searchHide" : "searchShow",
     rightVisible ? t("searchPanelToggleHideTip") : t("searchPanelToggleShowTip")
   );
   setIconButtonVisual(
     els.toggleThumbInFullscreenBtn,
-    leftVisible ? "🗂" : "📑",
+    leftVisible ? "thumbnailHide" : "thumbnailShow",
     leftVisible ? t("thumbToggleHideTip") : t("thumbToggleShowTip")
   );
   setIconButtonVisual(
     els.toggleFullscreenBtn,
-    state.isFullScreen ? "🗗" : "⛶",
+    state.isFullScreen ? "fullscreenExit" : "fullscreenEnter",
     state.isFullScreen ? t("fullscreenExitTip") : t("fullscreenTip")
   );
   setIconButtonVisual(
     els.toggleDarkBtn,
-    darkEnabled ? "☀" : "🌙",
+    darkEnabled ? "lightMode" : "darkMode",
     darkEnabled ? t("lightModeTip") : t("darkModeTip")
   );
 }
@@ -874,10 +933,6 @@ function applyPanelLayout() {
   applyWorkspaceColumnSizes(leftVisible, rightVisible);
   els.workspace.classList.toggle("left-collapsed", !leftVisible);
   els.workspace.classList.toggle("right-collapsed", !rightVisible);
-  els.thumbPanel.classList.toggle("hidden", !leftVisible);
-  els.leftResizer.classList.toggle("hidden", !leftVisible);
-  els.searchPanel.classList.toggle("hidden", !rightVisible);
-  els.rightResizer.classList.toggle("hidden", !rightVisible);
   if (!isSinglePageFullscreen()) {
     for (const view of state.pageViews.values()) {
       view.wrap.classList.remove("hidden-page");
@@ -1951,28 +2006,36 @@ function shouldApplyFullscreenFit(options = {}) {
   return !state.fullScreenAutoFitDone;
 }
 
+function normalizeScaleGuard() {
+  if (Number.isFinite(state.scale) && state.scale > 0) {
+    state.lastValidScale = state.scale;
+    return;
+  }
+  const fallback = Number.isFinite(state.lastValidScale) && state.lastValidScale > 0 ? state.lastValidScale : 1;
+  state.scale = clamp(fallback, 0.25, 6);
+}
+
+function layoutRecover(options = {}) {
+  queueLayoutRecoveryRender(options);
+}
+
 function queueLayoutRecoveryRender(options = {}) {
   if (!state.pdfDoc) {
     return;
   }
   const token = ++state.layoutRecoveryToken;
-  const attempt = Number(options.attempt || 0);
   const runRecovery = async () => {
     if (token !== state.layoutRecoveryToken) {
       return;
     }
     ensureCurrentPageExists();
-    if (!(await waitForStableViewerSize(120, 120, 6))) {
-      if (attempt < 5) {
-        setTimeout(() => {
-          queueLayoutRecoveryRender({ ...options, attempt: attempt + 1 });
-        }, 120);
-      }
+    if (!(await waitForStableViewerSize(120, 120, 8))) {
       return;
     }
     if (token !== state.layoutRecoveryToken) {
       return;
     }
+    normalizeScaleGuard();
     state.viewerRenderRecoveryCount += 1;
     if (els.pagesContainer.children.length === 0 && state.pageOrder.length > 0) {
       await rebuildPageViews();
@@ -1985,13 +2048,7 @@ function queueLayoutRecoveryRender(options = {}) {
     }
     await goToPage(state.currentPage, false);
     if (shouldApplyFullscreenFit(options)) {
-      const fitApplied = await fitCurrentPageToViewport();
-      if (!fitApplied && attempt < 5) {
-        setTimeout(() => {
-          queueLayoutRecoveryRender({ ...options, attempt: attempt + 1, forceFit: true });
-        }, 120);
-        return;
-      }
+      await fitCurrentPageToViewport();
       await goToPage(state.currentPage, false);
     } else if (isSinglePageFullscreen()) {
       alignCurrentPageToViewerCenter();
@@ -2003,11 +2060,6 @@ function queueLayoutRecoveryRender(options = {}) {
     await ensureViewerPageVisible();
     if (state.isFullScreen) {
       focusViewerPanel();
-    }
-    if (countPagesIntersectingViewer(true) === 0 && attempt < 4) {
-      setTimeout(() => {
-        queueLayoutRecoveryRender({ ...options, attempt: attempt + 1, forceFit: state.isFullScreen || options.forceFit });
-      }, 90);
     }
   };
   requestAnimationFrame(() => {
@@ -2906,6 +2958,7 @@ async function zoomTo(newScale, anchorInput = null, options = {}) {
 
   const oldScale = state.scale;
   state.scale = nextScale;
+  state.lastValidScale = nextScale;
   setZoomMode(options.zoomMode || "manual");
   await renderAllPages({ prioritizeVisible: options.prioritizeVisible !== false });
   updateToolbarState();
@@ -2928,10 +2981,10 @@ function toggleFullscreenViewMode() {
   if (state.isFullScreen) {
     setZoomMode("fit");
     state.fullScreenAutoFitDone = false;
-    queueLayoutRecoveryRender({ forceFit: true });
+    layoutRecover({ forceFit: true });
     return;
   }
-  queueLayoutRecoveryRender();
+  layoutRecover();
 }
 
 async function buildEditedPdfBytes() {
@@ -3065,7 +3118,7 @@ async function savePdfOverwrite() {
   setStatus("원본 파일 덮어쓰기 저장 완료");
 }
 
-async function openPrintPreview() {
+async function openPrintDocument() {
   if (!state.pdfDoc) {
     return false;
   }
@@ -3073,8 +3126,8 @@ async function openPrintPreview() {
   const bytes = await buildEditedPdfBytes();
   const currentName = fileNameFromPath(state.filePath) || "document.pdf";
   const safeBase = currentName.replace(/\.[^./\\]+$/, "");
-  const fileName = `${safeBase}-print-preview.pdf`;
-  const result = await window.lookupAPI.printPreview(bytes, fileName);
+  const fileName = `${safeBase}-print.pdf`;
+  const result = await window.lookupAPI.printDocument(bytes, fileName);
   if (!result?.ok) {
     setStatus(result?.message || t("printFailed"), true);
     return false;
@@ -3148,6 +3201,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.ocrErrorShown = false;
   clearSearchState();
   state.scale = 1;
+  state.lastValidScale = 1;
   setZoomMode("fit");
   state.fullScreenAutoFitDone = false;
   state.currentPage = 1;
@@ -3161,7 +3215,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   await renderThumbnails();
   updatePageBadges();
   await goToPage(state.currentPage, false);
-  queueLayoutRecoveryRender({ forceFit: state.isFullScreen || state.zoomMode !== "manual" });
+  layoutRecover({ forceFit: state.isFullScreen || state.zoomMode !== "manual" });
   const convertTail =
     meta && meta.converted
       ? state.language === "en"
@@ -3290,7 +3344,7 @@ function toggleLeftPanelVisibility() {
     setZoomMode("fit");
     state.fullScreenAutoFitDone = false;
   }
-  queueLayoutRecoveryRender({
+  layoutRecover({
     forceFit
   });
 }
@@ -3302,7 +3356,7 @@ function toggleRightPanelVisibility() {
   state.searchPanelVisible = !state.searchPanelVisible;
   applyPanelLayout();
   persistLayoutState();
-  queueLayoutRecoveryRender();
+  layoutRecover();
 }
 
 function handlePanelResizeStart(side, startEvent) {
@@ -3354,7 +3408,7 @@ function handlePanelResizeStart(side, startEvent) {
     if (side === "left") {
       queueThumbnailRerender();
     }
-    queueLayoutRecoveryRender({
+    layoutRecover({
       forceFit: state.isFullScreen && side === "left" && state.zoomMode !== "manual"
     });
     if (event) {
@@ -3382,7 +3436,7 @@ function handleWindowResize() {
     if (getEffectiveLeftPanelVisible()) {
       queueThumbnailRerender();
     }
-    queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen && state.zoomMode === "manual" });
+    layoutRecover({ preserveZoom: state.isFullScreen && state.zoomMode === "manual" });
   }, 80);
 }
 
@@ -3398,7 +3452,7 @@ function bindToolbarActions() {
   els.saveOverwriteBtn.addEventListener("click", () =>
     savePdfOverwrite().catch((error) => setStatus(error.message, true))
   );
-  els.printBtn.addEventListener("click", () => openPrintPreview().catch((error) => setStatus(error.message, true)));
+  els.printBtn.addEventListener("click", () => openPrintDocument().catch((error) => setStatus(error.message, true)));
 
   els.prevPageBtn.addEventListener("click", async () => {
     const index = getCurrentDisplayIndex();
@@ -3598,7 +3652,7 @@ function bindWindowActions() {
     }
     if (event.ctrlKey && event.key.toLowerCase() === "p") {
       event.preventDefault();
-      await openPrintPreview();
+      await openPrintDocument();
       return;
     }
     if (event.key === "F11") {
@@ -3673,7 +3727,7 @@ function bindMainProcessEvents() {
       "open-file": () => openFileDialog(),
       "save-as": () => savePdfAs(),
       "save-overwrite": () => savePdfOverwrite(),
-      print: () => openPrintPreview(),
+      print: () => openPrintDocument(),
       "prev-page": async () => {
         await stepPage(-1, true);
       },
@@ -3735,9 +3789,9 @@ function bindMainProcessEvents() {
     updateToolbarState();
     persistLayoutState();
     if (isFullScreen) {
-      queueLayoutRecoveryRender({ forceFit: true });
+      layoutRecover({ forceFit: true });
     } else {
-      queueLayoutRecoveryRender({ preserveZoom: state.zoomMode === "manual" });
+      layoutRecover({ preserveZoom: state.zoomMode === "manual" });
     }
     if (isFullScreen || wasFullScreen) {
       focusViewerPanel();
