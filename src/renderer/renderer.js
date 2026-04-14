@@ -25,6 +25,7 @@ const storage = {
   darkMode: "lookup-dark-mode",
   language: "lookup-language",
   fullscreenMode: "lookup-fullscreen-view-mode",
+  ribbonTab: "lookup-ribbon-tab",
   leftPanelWidth: "lookup-left-panel-width",
   rightPanelWidth: "lookup-right-panel-width",
   leftPanelVisible: "lookup-left-panel-visible",
@@ -52,6 +53,20 @@ const i18n = {
     open: "열기",
     saveAs: "다른 이름 저장",
     saveOverwrite: "덮어쓰기",
+    ribbonHome: "홈",
+    ribbonView: "보기",
+    ribbonAnnotate: "주석",
+    ribbonTools: "도구",
+    ribbonGroupFile: "파일",
+    ribbonGroupPage: "페이지",
+    ribbonGroupZoom: "확대/축소",
+    ribbonGroupRotate: "회전/정리",
+    ribbonGroupLayout: "화면",
+    ribbonGroupSearch: "검색",
+    ribbonGroupAnnotate: "주석 도구",
+    ribbonGroupHistory: "편집 기록",
+    ribbonGroupUpdate: "업데이트",
+    ribbonGroupLanguage: "언어",
     prev: "이전",
     next: "다음",
     zoomReset: "원래 크기",
@@ -116,6 +131,10 @@ const i18n = {
     updateNotesTitle: "업데이트 완료",
     updateNotesFallback: "변경 사항 요약을 불러오지 못했습니다.",
     updateNotesClose: "확인",
+    updateNotesSectionGeneral: "변경 사항",
+    copyDeveloperEmail: "개발자 문의 이메일 복사",
+    languageKo: "한국어",
+    languageEn: "English",
     openErrorNotFound: "파일을 찾을 수 없습니다. 경로를 확인해 주세요.",
     openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
     openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
@@ -127,6 +146,20 @@ const i18n = {
     open: "Open",
     saveAs: "Save As",
     saveOverwrite: "Overwrite",
+    ribbonHome: "Home",
+    ribbonView: "View",
+    ribbonAnnotate: "Annotate",
+    ribbonTools: "Tools",
+    ribbonGroupFile: "File",
+    ribbonGroupPage: "Page",
+    ribbonGroupZoom: "Zoom",
+    ribbonGroupRotate: "Rotate / Clean",
+    ribbonGroupLayout: "Layout",
+    ribbonGroupSearch: "Search",
+    ribbonGroupAnnotate: "Annotation tools",
+    ribbonGroupHistory: "Edit history",
+    ribbonGroupUpdate: "Update",
+    ribbonGroupLanguage: "Language",
     prev: "Prev",
     next: "Next",
     zoomReset: "Reset",
@@ -191,6 +224,10 @@ const i18n = {
     updateNotesTitle: "Update completed",
     updateNotesFallback: "Unable to load the release notes.",
     updateNotesClose: "Close",
+    updateNotesSectionGeneral: "Release notes",
+    copyDeveloperEmail: "Copy Developer Email",
+    languageKo: "한국어",
+    languageEn: "English",
     openErrorNotFound: "File not found. Please check the path.",
     openErrorPermission: "No permission to open this file.",
     openErrorUnsupported: "Unsupported file format.",
@@ -239,6 +276,9 @@ const state = {
   thumbRenderVersion: 0,
   isFullScreen: false,
   fullScreenViewMode: localStorage.getItem(storage.fullscreenMode) || "continuous",
+  activeRibbonTab: ["home", "view", "annotate", "tools"].includes(localStorage.getItem(storage.ribbonTab) || "")
+    ? localStorage.getItem(storage.ribbonTab)
+    : "home",
   thumbPanelVisible: getStoredBool(storage.leftPanelVisible, true),
   searchPanelVisible: getStoredBool(storage.rightPanelVisible, false),
   fullscreenThumbVisible: false,
@@ -282,6 +322,12 @@ const state = {
 
 const els = {
   workspace: document.getElementById("workspace"),
+  ribbonTabs: Array.from(document.querySelectorAll("[data-ribbon-tab]")),
+  ribbonPanels: Array.from(document.querySelectorAll("[data-ribbon-panel]")),
+  tabHomeBtn: document.getElementById("tabHomeBtn"),
+  tabViewBtn: document.getElementById("tabViewBtn"),
+  tabAnnotateBtn: document.getElementById("tabAnnotateBtn"),
+  tabToolsBtn: document.getElementById("tabToolsBtn"),
   openFileBtn: document.getElementById("openFileBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
   saveOverwriteBtn: document.getElementById("saveOverwriteBtn"),
@@ -297,7 +343,7 @@ const els = {
   rotateLeftBtn: document.getElementById("rotateLeftBtn"),
   rotateRightBtn: document.getElementById("rotateRightBtn"),
   deletePageBtn: document.getElementById("deletePageBtn"),
-  editModeButtons: Array.from(document.querySelectorAll(".mode")),
+  editModeButtons: Array.from(document.querySelectorAll(".mode[data-mode]")),
   undoBtn: document.getElementById("undoBtn"),
   redoBtn: document.getElementById("redoBtn"),
   searchInput: document.getElementById("searchInput"),
@@ -309,6 +355,10 @@ const els = {
   toggleSearchPanelBtn: document.getElementById("toggleSearchPanelBtn"),
   toggleFullscreenBtn: document.getElementById("toggleFullscreenBtn"),
   toggleDarkBtn: document.getElementById("toggleDarkBtn"),
+  quickCheckUpdateBtn: document.getElementById("quickCheckUpdateBtn"),
+  quickCopyContactBtn: document.getElementById("quickCopyContactBtn"),
+  quickLangKoBtn: document.getElementById("quickLangKoBtn"),
+  quickLangEnBtn: document.getElementById("quickLangEnBtn"),
   thumbPanel: document.getElementById("thumbPanel"),
   leftResizer: document.getElementById("leftResizer"),
   rightResizer: document.getElementById("rightResizer"),
@@ -329,7 +379,7 @@ const els = {
   updateNotesModal: document.getElementById("updateNotesModal"),
   updateNotesTitle: document.getElementById("updateNotesTitle"),
   updateNotesVersion: document.getElementById("updateNotesVersion"),
-  updateNotesList: document.getElementById("updateNotesList"),
+  updateNotesContent: document.getElementById("updateNotesContent"),
   updateNotesCloseBtn: document.getElementById("updateNotesCloseBtn"),
   statusBar: document.getElementById("statusBar"),
   statusText: document.getElementById("statusText"),
@@ -468,6 +518,33 @@ async function redoLastAction() {
   setStatus(t("redoDone"));
 }
 
+function applyRibbonTabSelection() {
+  const activeTab = normalizeRibbonTab(state.activeRibbonTab);
+  for (const tabBtn of els.ribbonTabs) {
+    tabBtn.classList.toggle("active", tabBtn.dataset.ribbonTab === activeTab);
+  }
+  for (const panel of els.ribbonPanels) {
+    panel.classList.toggle("active", panel.dataset.ribbonPanel === activeTab);
+  }
+}
+
+function setActiveRibbonTab(tab, persist = true) {
+  state.activeRibbonTab = normalizeRibbonTab(tab);
+  applyRibbonTabSelection();
+  if (persist) {
+    localStorage.setItem(storage.ribbonTab, state.activeRibbonTab);
+  }
+}
+
+function updateLanguageQuickButtons() {
+  if (els.quickLangKoBtn) {
+    els.quickLangKoBtn.classList.toggle("active", state.language === "ko");
+  }
+  if (els.quickLangEnBtn) {
+    els.quickLangEnBtn.classList.toggle("active", state.language === "en");
+  }
+}
+
 function applyLanguageToStaticTexts() {
   if (state.applyingLanguage) {
     return;
@@ -517,6 +594,8 @@ function applyLanguageToStaticTexts() {
     if (els.updateNotesCloseBtn) {
       els.updateNotesCloseBtn.textContent = t("updateNotesClose");
     }
+    updateLanguageQuickButtons();
+    applyRibbonTabSelection();
     updateSearchCountText();
     updateVersionLabels();
     if (els.updateStageText) {
@@ -608,6 +687,14 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
     default:
       return fallbackMessage || t("openErrorGeneric");
   }
+}
+
+function normalizeRibbonTab(tab) {
+  const value = String(tab || "").toLowerCase();
+  if (value === "home" || value === "view" || value === "annotate" || value === "tools") {
+    return value;
+  }
+  return "home";
 }
 
 function buildWindowTitle(filePath) {
@@ -852,39 +939,113 @@ function updateVersionLabels(currentVersion = state.appVersion, targetVersion = 
 
 function sanitizeReleaseNotesText(value) {
   let text = String(value || "").replace(/\uFEFF/g, "");
-  text = text.replace(/```[\s\S]*?```/g, " ");
-  text = text.replace(/`([^`]+)`/g, " $1 ");
+  text = text.replace(/```[\s\S]*?```/g, "\n");
   text = text.replace(/<\/?[^>]+>/g, " ");
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-  text = text.replace(/[>*_~]/g, " ");
   text = text.replace(/\r/g, "");
   return text;
 }
 
-function toReleaseNoteLines(releaseNotes) {
+function cleanReleaseNoteLineText(value) {
+  return String(value || "")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseReleaseNotesTree(releaseNotes) {
   const source = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
-  const lines = sanitizeReleaseNotesText(source)
+  const rawLines = sanitizeReleaseNotesText(source)
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[\s#\-*•\d.)]+/, "").trim())
-    .filter(Boolean);
-  const deduped = [];
-  const seen = new Set();
-  for (const line of lines) {
-    const normalized = line.replace(/\s+/g, " ").trim();
-    if (!normalized) {
+    .map((line) => line.replace(/\t/g, "  ").trimEnd())
+    .filter((line) => line.trim().length > 0);
+
+  const sections = [];
+  const seenItems = new Set();
+  let currentSection = null;
+  let lastTopItem = null;
+
+  const ensureSection = (title) => {
+    const normalizedTitle = cleanReleaseNoteLineText(title || t("updateNotesSectionGeneral")) || t("updateNotesSectionGeneral");
+    const existing = sections.find((section) => section.title.toLowerCase() === normalizedTitle.toLowerCase());
+    if (existing) {
+      currentSection = existing;
+      return existing;
+    }
+    const next = { title: normalizedTitle, items: [] };
+    sections.push(next);
+    currentSection = next;
+    return next;
+  };
+
+  for (const rawLine of rawLines) {
+    const trimmed = rawLine.trim();
+    const headingMatch = trimmed.match(/^#{2,6}\s+(.+)$/);
+    if (headingMatch) {
+      ensureSection(headingMatch[1]);
+      lastTopItem = null;
       continue;
     }
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) {
+
+    const candidateTitle = cleanReleaseNoteLineText(trimmed.replace(/[:：]\s*$/, ""));
+    const sectionTitlePattern = /^(수정 사항|포함 파일|변경 사항|새 기능|개선 사항|버그 수정|release notes|changes|included files)$/i;
+    if (candidateTitle && sectionTitlePattern.test(candidateTitle)) {
+      ensureSection(candidateTitle);
+      lastTopItem = null;
       continue;
     }
-    seen.add(key);
-    deduped.push(normalized);
-    if (deduped.length >= 80) {
-      break;
+
+    const indentSize = rawLine.match(/^\s*/)?.[0].length || 0;
+    const listMatch = trimmed.match(/^([-*•]|\d+[.)])\s+(.+)$/);
+    if (listMatch) {
+      const text = cleanReleaseNoteLineText(listMatch[2]);
+      if (!text) {
+        continue;
+      }
+      const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
+      const depth = indentSize >= 2 ? 1 : 0;
+      if (depth > 0 && lastTopItem) {
+        const childKey = `${section.title.toLowerCase()}::child::${text.toLowerCase()}`;
+        if (!seenItems.has(childKey)) {
+          seenItems.add(childKey);
+          lastTopItem.children.push(text);
+        }
+      } else {
+        const itemKey = `${section.title.toLowerCase()}::top::${text.toLowerCase()}`;
+        if (seenItems.has(itemKey)) {
+          continue;
+        }
+        seenItems.add(itemKey);
+        lastTopItem = { text, children: [] };
+        section.items.push(lastTopItem);
+      }
+      continue;
     }
+
+    const plainText = cleanReleaseNoteLineText(trimmed.replace(/^[>\-•\d.)\s]+/, ""));
+    if (!plainText) {
+      continue;
+    }
+    const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
+    const plainKey = `${section.title.toLowerCase()}::plain::${plainText.toLowerCase()}`;
+    if (seenItems.has(plainKey)) {
+      continue;
+    }
+    seenItems.add(plainKey);
+    lastTopItem = { text: plainText, children: [] };
+    section.items.push(lastTopItem);
   }
-  return deduped;
+
+  const normalizedSections = sections
+    .map((section) => ({
+      title: section.title,
+      items: section.items.filter((item) => item && item.text).slice(0, 40)
+    }))
+    .filter((section) => section.items.length > 0)
+    .slice(0, 8);
+
+  return normalizedSections;
 }
 
 function hideUpdateNotesModal() {
@@ -895,22 +1056,50 @@ function hideUpdateNotesModal() {
 }
 
 function showUpdateNotesModal(version, releaseNotes) {
-  if (!els.updateNotesModal || !els.updateNotesList) {
+  if (!els.updateNotesModal || !els.updateNotesContent) {
     return;
   }
-  const lines = toReleaseNoteLines(releaseNotes);
+  const sections = parseReleaseNotesTree(releaseNotes);
   els.updateNotesVersion.textContent = version ? `v${version}` : "";
-  els.updateNotesList.innerHTML = "";
-  if (!lines.length) {
-    const li = document.createElement("li");
-    li.textContent = t("updateNotesFallback");
-    els.updateNotesList.appendChild(li);
+  els.updateNotesContent.innerHTML = "";
+  if (!sections.length) {
+    const fallbackList = document.createElement("ul");
+    fallbackList.className = "update-notes-list";
+    const fallbackItem = document.createElement("li");
+    fallbackItem.className = "update-notes-item";
+    fallbackItem.textContent = t("updateNotesFallback");
+    fallbackList.appendChild(fallbackItem);
+    els.updateNotesContent.appendChild(fallbackList);
   } else {
-    lines.forEach((line) => {
-      const li = document.createElement("li");
-      li.textContent = line;
-      els.updateNotesList.appendChild(li);
-    });
+    for (const section of sections) {
+      const sectionWrap = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.className = "update-notes-section-title";
+      heading.textContent = section.title;
+      sectionWrap.appendChild(heading);
+
+      const list = document.createElement("ul");
+      list.className = "update-notes-list";
+      for (const item of section.items) {
+        const li = document.createElement("li");
+        li.className = "update-notes-item";
+        li.textContent = item.text;
+        if (Array.isArray(item.children) && item.children.length > 0) {
+          const subList = document.createElement("ul");
+          subList.className = "update-notes-sublist";
+          for (const child of item.children) {
+            const subItem = document.createElement("li");
+            subItem.className = "update-notes-subitem";
+            subItem.textContent = child;
+            subList.appendChild(subItem);
+          }
+          li.appendChild(subList);
+        }
+        list.appendChild(li);
+      }
+      sectionWrap.appendChild(list);
+      els.updateNotesContent.appendChild(sectionWrap);
+    }
   }
   els.updateNotesModal.classList.remove("hidden");
 }
@@ -968,12 +1157,19 @@ function updateToolbarState() {
   if (els.redoBtn) {
     els.redoBtn.disabled = !hasDoc || state.historyFuture.length === 0;
   }
+  if (els.quickCheckUpdateBtn) {
+    els.quickCheckUpdateBtn.disabled = state.updateBusy;
+  }
+  if (els.quickCopyContactBtn) {
+    els.quickCopyContactBtn.disabled = false;
+  }
 
   els.pageCountLabel.textContent = `/ ${hasDoc ? total : 0}`;
   els.pageInput.value = `${hasDoc ? Math.max(1, currentIndex + 1) : 1}`;
   els.zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
 
   updateFullscreenButtons();
+  updateLanguageQuickButtons();
   updateHistoryButtons();
 }
 
@@ -1437,20 +1633,23 @@ async function goToPage(pageNum, smooth = false) {
   if (!view) {
     return;
   }
-  if (isSinglePageFullscreen()) {
-    view.wrap.scrollIntoView({
-      behavior: smooth ? "smooth" : "auto",
-      block: "center",
-      inline: "center"
+  const scrollTop = Math.max(0, view.wrap.offsetTop + view.wrap.offsetHeight / 2 - els.viewerPanel.clientHeight / 2);
+  const maxScrollLeft = Math.max(0, els.viewerPanel.scrollWidth - els.viewerPanel.clientWidth);
+  const scrollLeft = clamp(
+    view.wrap.offsetLeft + view.wrap.offsetWidth / 2 - els.viewerPanel.clientWidth / 2,
+    0,
+    maxScrollLeft
+  );
+  if (smooth) {
+    els.viewerPanel.scrollTo({
+      top: scrollTop,
+      left: scrollLeft,
+      behavior: "smooth"
     });
-    alignCurrentPageToViewerCenter();
-    return;
+  } else {
+    els.viewerPanel.scrollTop = scrollTop;
+    els.viewerPanel.scrollLeft = scrollLeft;
   }
-  view.wrap.scrollIntoView({
-    behavior: smooth ? "smooth" : "auto",
-    block: "center",
-    inline: "center"
-  });
 }
 
 function alignCurrentPageToViewerCenter() {
@@ -1532,7 +1731,7 @@ function viewerSizeIsValid() {
   return els.viewerPanel.clientWidth > 80 && els.viewerPanel.clientHeight > 80;
 }
 
-function countPagesIntersectingViewer() {
+function countPagesIntersectingViewer(requireRendered = false) {
   const panelRect = els.viewerPanel.getBoundingClientRect();
   let count = 0;
   for (const pageNum of state.pageOrder) {
@@ -1550,6 +1749,16 @@ function countPagesIntersectingViewer() {
       rect.right > panelRect.left + 2 &&
       rect.left < panelRect.right - 2;
     if (intersects) {
+      if (requireRendered) {
+        const hasRaster =
+          Number(view.canvas?.width || 0) > 2 &&
+          Number(view.canvas?.height || 0) > 2 &&
+          Number(view.wrap?.offsetWidth || 0) > 10 &&
+          Number(view.wrap?.offsetHeight || 0) > 10;
+        if (!hasRaster) {
+          continue;
+        }
+      }
       count += 1;
       if (count > 0) {
         return count;
@@ -1563,7 +1772,7 @@ async function ensureViewerPageVisible() {
   if (!state.pdfDoc || !state.pageOrder.length) {
     return;
   }
-  if (countPagesIntersectingViewer() > 0) {
+  if (countPagesIntersectingViewer(true) > 0) {
     return;
   }
 
@@ -1575,11 +1784,22 @@ async function ensureViewerPageVisible() {
   if (state.currentPage) {
     await renderPage(state.currentPage);
     await goToPage(state.currentPage, false);
-    if (isSinglePageFullscreen()) {
-      alignCurrentPageToViewerCenter();
-    }
+    alignCurrentPageToViewerCenter();
   }
-  if (countPagesIntersectingViewer() > 0) {
+  if (countPagesIntersectingViewer(true) > 0) {
+    return;
+  }
+
+  // 2차 복구: 현재 페이지의 캔버스/오버레이를 다시 만들고 즉시 렌더한다.
+  if (currentView) {
+    currentView.canvas.width = 0;
+    currentView.canvas.height = 0;
+    currentView.searchOverlay.innerHTML = "";
+    await renderPage(state.currentPage);
+    await goToPage(state.currentPage, false);
+    alignCurrentPageToViewerCenter();
+  }
+  if (countPagesIntersectingViewer(true) > 0) {
     return;
   }
 
@@ -1593,9 +1813,7 @@ async function ensureViewerPageVisible() {
   if (state.currentPage) {
     await renderPage(state.currentPage);
     await goToPage(state.currentPage, false);
-    if (isSinglePageFullscreen()) {
-      alignCurrentPageToViewerCenter();
-    }
+    alignCurrentPageToViewerCenter();
   }
 }
 
@@ -1650,6 +1868,10 @@ function queueLayoutRecoveryRender(options = {}) {
       return;
     }
     state.viewerRenderRecoveryCount += 1;
+    if (els.pagesContainer.children.length === 0 && state.pageOrder.length > 0) {
+      await rebuildPageViews();
+      ensureCurrentPageExists();
+    }
     applyPageVisibility();
     ensureCurrentPageVisibleInSingleMode();
     if (state.currentPage && state.pageViews.has(state.currentPage)) {
@@ -2751,11 +2973,13 @@ async function checkForUpdatesFromUI() {
   }
   state.updateBusy = true;
   applyUpdateVisualState("checking", "checking", 0);
+  updateToolbarState();
   setStatus(t("updateChecking"));
   const result = await window.lookupAPI.checkForUpdates();
   if (!result.ok) {
     state.updateBusy = false;
     applyUpdateVisualState("error", "error", state.updateStage === "downloading" ? undefined : 0);
+    updateToolbarState();
     setStatus(
       state.language === "en" ? `Update check failed: ${result.message}` : `업데이트 확인 실패: ${result.message}`,
       true
@@ -2820,6 +3044,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   await renderThumbnails();
   updatePageBadges();
   await goToPage(state.currentPage, false);
+  queueLayoutRecoveryRender({ forceFit: state.isFullScreen || state.zoomMode !== "manual" });
   const convertTail =
     meta && meta.converted
       ? state.language === "en"
@@ -3045,6 +3270,12 @@ function handleWindowResize() {
 }
 
 function bindToolbarActions() {
+  els.ribbonTabs.forEach((tabBtn) => {
+    tabBtn.addEventListener("click", () => {
+      setActiveRibbonTab(tabBtn.dataset.ribbonTab, true);
+    });
+  });
+
   els.openFileBtn.addEventListener("click", () => openFileDialog());
   els.saveAsBtn.addEventListener("click", () => savePdfAs().catch((error) => setStatus(error.message, true)));
   els.saveOverwriteBtn.addEventListener("click", () =>
@@ -3124,6 +3355,34 @@ function bindToolbarActions() {
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
     toggleLeftPanelVisibility();
   });
+
+  if (els.quickCheckUpdateBtn) {
+    els.quickCheckUpdateBtn.addEventListener("click", async () => {
+      const ok = await checkForUpdatesFromUI();
+      if (ok) {
+        setStatus(t("updateStarted"));
+      }
+    });
+  }
+  if (els.quickCopyContactBtn) {
+    els.quickCopyContactBtn.addEventListener("click", async () => {
+      await window.lookupAPI.copyText("lamsaiku65@gmail.com");
+      setStatus(t("copiedContact"));
+    });
+  }
+  if (els.quickLangKoBtn) {
+    els.quickLangKoBtn.addEventListener("click", async () => {
+      await setLanguage("ko", true);
+      setStatus(t("languageChangedKo"));
+    });
+  }
+  if (els.quickLangEnBtn) {
+    els.quickLangEnBtn.addEventListener("click", async () => {
+      await setLanguage("en", true);
+      setStatus(t("languageChangedEn"));
+    });
+  }
+
   if (els.textMemoAddBtn) {
     els.textMemoAddBtn.addEventListener("click", () => commitTextMemoFromEditor());
   }
@@ -3395,6 +3654,7 @@ function bindMainProcessEvents() {
     }
     applyUpdateVisualState(payload.status, payload.stage, percent);
     updateVersionLabels();
+    updateToolbarState();
     if (payload.message) {
       setStatus(payload.message, payload.status === "error");
     }
@@ -3442,6 +3702,8 @@ async function init() {
     // fallback to local storage language
   }
   localStorage.setItem(storage.language, state.language);
+  state.activeRibbonTab = normalizeRibbonTab(state.activeRibbonTab);
+  setActiveRibbonTab(state.activeRibbonTab, false);
   applyLanguageToStaticTexts();
   applySavedDarkMode();
   bindToolbarActions();
