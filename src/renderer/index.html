@@ -9,67 +9,127 @@
   <body>
     <div class="app-shell">
       <header class="top-toolbar">
-        <div class="toolbar-group toolbar-main-left">
-          <button id="openFileBtn" class="action primary" data-i18n="open">열기</button>
-          <button id="saveAsBtn" class="action" data-i18n="saveAs">다른 이름 저장</button>
-          <button id="saveOverwriteBtn" class="action" data-i18n="saveOverwrite">덮어쓰기</button>
-          <button id="printBtn" class="action icon-button" aria-label="인쇄" title="인쇄 (Ctrl+P)">
-            <span class="button-icon" aria-hidden="true">🖨</span>
-          </button>
+        <div class="ribbon-tabs" role="tablist" aria-label="리본 탭">
+          <button id="tabHomeBtn" class="ribbon-tab active" data-ribbon-tab="home" data-i18n="ribbonHome">홈</button>
+          <button id="tabViewBtn" class="ribbon-tab" data-ribbon-tab="view" data-i18n="ribbonView">보기</button>
+          <button id="tabAnnotateBtn" class="ribbon-tab" data-ribbon-tab="annotate" data-i18n="ribbonAnnotate">주석</button>
+          <button id="tabToolsBtn" class="ribbon-tab" data-ribbon-tab="tools" data-i18n="ribbonTools">도구</button>
         </div>
 
-        <div class="toolbar-group">
-          <button id="prevPageBtn" class="action" data-i18n="prev">이전</button>
-          <input id="pageInput" class="page-input" type="number" min="1" value="1" />
-          <span id="pageCountLabel" class="muted">/ 0</span>
-          <button id="nextPageBtn" class="action" data-i18n="next">다음</button>
-        </div>
+        <div class="ribbon-panels">
+          <section class="ribbon-panel active" data-ribbon-panel="home">
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="openFileBtn" class="action primary" data-i18n="open">열기</button>
+                <button id="saveAsBtn" class="action" data-i18n="saveAs">다른 이름 저장</button>
+                <button id="saveOverwriteBtn" class="action" data-i18n="saveOverwrite">덮어쓰기</button>
+                <button id="printBtn" class="action icon-button" aria-label="인쇄" title="인쇄 (Ctrl+P)">
+                  <span class="button-icon" aria-hidden="true">🖨</span>
+                </button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupFile">파일</div>
+            </div>
 
-        <div class="toolbar-group">
-          <button id="zoomOutBtn" class="action">-</button>
-          <span id="zoomLabel" class="muted">100%</span>
-          <button id="zoomInBtn" class="action">+</button>
-          <button id="zoomResetBtn" class="action" data-i18n="zoomReset">원래 크기</button>
-        </div>
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="prevPageBtn" class="action" data-i18n="prev">이전</button>
+                <input id="pageInput" class="page-input" type="number" min="1" value="1" />
+                <span id="pageCountLabel" class="muted">/ 0</span>
+                <button id="nextPageBtn" class="action" data-i18n="next">다음</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupPage">페이지</div>
+            </div>
 
-        <div class="toolbar-group">
-          <button id="rotateLeftBtn" class="action" data-i18n="rotateLeft">왼쪽 회전</button>
-          <button id="rotateRightBtn" class="action" data-i18n="rotateRight">오른쪽 회전</button>
-          <button id="deletePageBtn" class="action danger" data-i18n="deletePage">페이지 삭제</button>
-        </div>
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="zoomOutBtn" class="action">-</button>
+                <span id="zoomLabel" class="muted">100%</span>
+                <button id="zoomInBtn" class="action">+</button>
+                <button id="zoomResetBtn" class="action" data-i18n="zoomReset">원래 크기</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupZoom">확대/축소</div>
+            </div>
+          </section>
 
-        <div class="toolbar-group">
-          <button id="editViewBtn" class="action mode active" data-mode="view" data-i18n="modeView">보기</button>
-          <button id="editHighlightBtn" class="action mode" data-mode="highlight" data-i18n="modeHighlight">형광펜</button>
-          <button id="editPenBtn" class="action mode" data-mode="pen" data-i18n="modePen">펜</button>
-          <button id="editTextBtn" class="action mode" data-mode="text" data-i18n="modeText">텍스트 메모</button>
-          <button id="undoBtn" class="action icon-button" aria-label="되돌리기" title="되돌리기 (Ctrl+Z)">
-            <span class="button-icon" aria-hidden="true">↶</span>
-          </button>
-          <button id="redoBtn" class="action icon-button" aria-label="다시하기" title="다시하기 (Ctrl+Y)">
-            <span class="button-icon" aria-hidden="true">↷</span>
-          </button>
-        </div>
+          <section class="ribbon-panel" data-ribbon-panel="view">
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="rotateLeftBtn" class="action" data-i18n="rotateLeft">왼쪽 회전</button>
+                <button id="rotateRightBtn" class="action" data-i18n="rotateRight">오른쪽 회전</button>
+                <button id="deletePageBtn" class="action danger" data-i18n="deletePage">페이지 삭제</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupRotate">회전/정리</div>
+            </div>
 
-        <div class="toolbar-group">
-          <button id="toggleThumbPanelBtn" class="action" data-i18n="thumbToggleShow">미리보기 표시</button>
-          <button id="toggleSearchPanelBtn" class="action" data-i18n="searchPanelToggleShow">검색 패널 표시</button>
-          <button id="toggleFullscreenBtn" class="action" data-i18n="fullscreen">전체화면</button>
-          <button id="toggleDarkBtn" class="action" data-i18n="darkMode">다크모드</button>
-        </div>
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="toggleThumbPanelBtn" class="action" data-i18n="thumbToggleShow">미리보기 표시</button>
+                <button id="toggleSearchPanelBtn" class="action" data-i18n="searchPanelToggleShow">검색 패널 표시</button>
+                <button id="toggleFullscreenBtn" class="action" data-i18n="fullscreen">전체화면</button>
+                <button id="toggleDarkBtn" class="action" data-i18n="darkMode">다크모드</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupLayout">화면</div>
+            </div>
 
-        <div class="toolbar-group search-group">
-          <input
-            id="searchInput"
-            class="search-input"
-            type="text"
-            data-i18n-placeholder="searchPlaceholder"
-            placeholder="문서 검색"
-          />
-          <button id="searchBtn" class="action" data-i18n="search">검색</button>
-          <button id="searchPrevBtn" class="action" data-i18n="prevHit">이전 결과</button>
-          <button id="searchNextBtn" class="action" data-i18n="nextHit">다음 결과</button>
-          <span id="searchCountLabel" class="muted">결과 0개</span>
+            <div class="ribbon-group ribbon-group-search">
+              <div class="toolbar-group search-group">
+                <input
+                  id="searchInput"
+                  class="search-input"
+                  type="text"
+                  data-i18n-placeholder="searchPlaceholder"
+                  placeholder="문서 검색"
+                />
+                <button id="searchBtn" class="action" data-i18n="search">검색</button>
+                <button id="searchPrevBtn" class="action" data-i18n="prevHit">이전 결과</button>
+                <button id="searchNextBtn" class="action" data-i18n="nextHit">다음 결과</button>
+                <span id="searchCountLabel" class="muted">결과 0개</span>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupSearch">검색</div>
+            </div>
+          </section>
+
+          <section class="ribbon-panel" data-ribbon-panel="annotate">
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="editViewBtn" class="action mode active" data-mode="view" data-i18n="modeView">보기</button>
+                <button id="editHighlightBtn" class="action mode" data-mode="highlight" data-i18n="modeHighlight">형광펜</button>
+                <button id="editPenBtn" class="action mode" data-mode="pen" data-i18n="modePen">펜</button>
+                <button id="editTextBtn" class="action mode" data-mode="text" data-i18n="modeText">텍스트 메모</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupAnnotate">주석 도구</div>
+            </div>
+
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="undoBtn" class="action icon-button" aria-label="되돌리기" title="되돌리기 (Ctrl+Z)">
+                  <span class="button-icon" aria-hidden="true">↶</span>
+                </button>
+                <button id="redoBtn" class="action icon-button" aria-label="다시하기" title="다시하기 (Ctrl+Y)">
+                  <span class="button-icon" aria-hidden="true">↷</span>
+                </button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupHistory">편집 기록</div>
+            </div>
+          </section>
+
+          <section class="ribbon-panel" data-ribbon-panel="tools">
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="quickCheckUpdateBtn" class="action" data-i18n="checkUpdate">업데이트 확인</button>
+                <button id="quickCopyContactBtn" class="action" data-i18n="copyDeveloperEmail">개발자 문의 이메일 복사</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupUpdate">업데이트</div>
+            </div>
+
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="quickLangKoBtn" class="action language-chip" data-lang="ko" data-i18n="languageKo">한국어</button>
+                <button id="quickLangEnBtn" class="action language-chip" data-lang="en" data-i18n="languageEn">English</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupLanguage">언어</div>
+            </div>
+          </section>
         </div>
       </header>
 
@@ -141,7 +201,7 @@
           <h2 id="updateNotesTitle" data-i18n="updateNotesTitle">업데이트 완료</h2>
           <span id="updateNotesVersion" class="muted"></span>
         </div>
-        <ul id="updateNotesList" class="modal-list"></ul>
+        <div id="updateNotesContent" class="update-notes-content"></div>
         <div class="modal-actions">
           <button id="updateNotesCloseBtn" class="action primary" data-i18n="updateNotesClose">확인</button>
         </div>

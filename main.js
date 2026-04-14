@@ -268,14 +268,12 @@ function normalizeReleaseNotesLines(releaseNotes) {
   const raw = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
   const plainText = raw
     .replace(/\uFEFF/g, "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, " $1 ")
+    .replace(/```[\s\S]*?```/g, "\n")
     .replace(/<\/?[^>]+>/g, " ")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
-    .replace(/[>*_~]/g, " ");
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
   const lines = plainText
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[\s#\-*•\d.)]+/, "").trim())
+    .map((line) => line.replace(/\s+$/g, ""))
     .filter(Boolean);
   const result = [];
   const seen = new Set();
