@@ -149,6 +149,8 @@ const i18n = {
     openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
     openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
     openErrorConvert: "문서 변환에 실패했습니다. 파일을 다시 확인해 주세요.",
+    openErrorEngineMissing: "변환 엔진을 찾지 못했습니다. Word/Excel/한컴 또는 LibreOffice 설치를 확인해 주세요.",
+    openErrorTimeout: "변환 시간이 오래 걸려 중단되었습니다. 잠시 후 다시 시도해 주세요.",
     openErrorGeneric: "문서를 열지 못했습니다.",
     openErrorPdfFallback: "일반 열기에 실패해 PDF 직접 열기로 복구했습니다."
   },
@@ -252,6 +254,8 @@ const i18n = {
     openErrorPermission: "No permission to open this file.",
     openErrorUnsupported: "Unsupported file format.",
     openErrorConvert: "Failed to convert this document.",
+    openErrorEngineMissing: "No conversion engine found. Check Word/Excel/Hancom or LibreOffice installation.",
+    openErrorTimeout: "Conversion timed out. Please try again.",
     openErrorGeneric: "Unable to open this document.",
     openErrorPdfFallback: "Standard open failed. Recovered using direct PDF read."
   }
@@ -267,9 +271,9 @@ const ICON_SVG = {
   print:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V4h10v4"/><rect x="6" y="13" width="12" height="7" rx="1.5"/><path d="M6 17H4.5a1.5 1.5 0 0 1-1.5-1.5V10a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5.5a1.5 1.5 0 0 1-1.5 1.5H18"/><circle cx="17.5" cy="10.5" r="0.8" fill="currentColor" stroke="none"/></svg>',
   thumbnailShow:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="6" height="16" rx="1.5"/><rect x="11.5" y="4" width="9" height="7" rx="1.5"/><rect x="11.5" y="13" width="9" height="7" rx="1.5"/></svg>',
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="5.5" height="16" rx="1.3"/><rect x="11.5" y="4.3" width="8.5" height="6.4" rx="1.2"/><rect x="11.5" y="13.3" width="8.5" height="6.4" rx="1.2"/></svg>',
   thumbnailHide:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="6" height="16" rx="1.5"/><rect x="11.5" y="4" width="9" height="7" rx="1.5"/><rect x="11.5" y="13" width="9" height="7" rx="1.5"/><path d="M4 20 20 4"/></svg>',
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="5.5" height="16" rx="1.3"/><rect x="11.5" y="4.3" width="8.5" height="6.4" rx="1.2"/><rect x="11.5" y="13.3" width="8.5" height="6.4" rx="1.2"/><path d="M5 19 19 5"/></svg>',
   searchShow:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M20 5v4"/><path d="M18 7h4"/></svg>',
   searchHide:
@@ -287,9 +291,9 @@ const ICON_SVG = {
   rotateRight:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 6h4v4"/><path d="M20 10A8 8 0 1 1 17 4.2"/><path d="m12 8-2 4h4l-2 4"/></svg>',
   undo:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H4v5"/><path d="M4 12a8 8 0 0 1 14.7-4"/><path d="M18.7 8 20 6.7"/></svg>',
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7H5v5"/><path d="M5 12a7.5 7.5 0 1 1 2.2 5.3"/><path d="M7.5 15.6 5 17"/></svg>',
   redo:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7h5v5"/><path d="M20 12a8 8 0 0 0-14.7-4"/><path d="M5.3 8 4 6.7"/></svg>',
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7h5v5"/><path d="M19 12a7.5 7.5 0 1 0-2.2 5.3"/><path d="M16.5 15.6 19 17"/></svg>',
   delete:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4.8h6V7"/><rect x="6.5" y="7" width="11" height="13" rx="1.5"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>',
   zoomIn:
@@ -732,8 +736,12 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
       return t("openErrorPermission");
     case "UNSUPPORTED_FORMAT":
       return t("openErrorUnsupported");
+    case "ENGINE_MISSING":
+      return t("openErrorEngineMissing");
+    case "CONVERT_TIMEOUT":
+      return t("openErrorTimeout");
     case "CONVERT_FAILED":
-      return t("openErrorConvert");
+      return fallbackMessage || t("openErrorConvert");
     default:
       return fallbackMessage || t("openErrorGeneric");
   }
@@ -933,6 +941,7 @@ function applyPanelLayout() {
   applyWorkspaceColumnSizes(leftVisible, rightVisible);
   els.workspace.classList.toggle("left-collapsed", !leftVisible);
   els.workspace.classList.toggle("right-collapsed", !rightVisible);
+  applyPageVisibility();
   if (!isSinglePageFullscreen()) {
     for (const view of state.pageViews.values()) {
       view.wrap.classList.remove("hidden-page");
@@ -1237,10 +1246,22 @@ function updateFullscreenButtons() {
 }
 
 function applyPageVisibility() {
+  ensureCurrentPageExists();
   const singleMode = state.isFullScreen && state.fullScreenViewMode === "single";
+  let visibleCount = 0;
   for (const [pageNum, view] of state.pageViews.entries()) {
     const hidden = singleMode && pageNum !== state.currentPage;
     view.wrap.classList.toggle("hidden-page", hidden);
+    if (!hidden) {
+      visibleCount += 1;
+    }
+  }
+  if (singleMode && visibleCount === 0 && state.pageOrder.length > 0) {
+    state.currentPage = state.pageOrder[0];
+    const fallbackView = state.pageViews.get(state.currentPage);
+    if (fallbackView) {
+      fallbackView.wrap.classList.remove("hidden-page");
+    }
   }
 }
 
@@ -1382,6 +1403,10 @@ async function renderPage(pageNum) {
   const view = state.pageViews.get(pageNum);
   if (!view) {
     return;
+  }
+  const safeScale = Number.isFinite(state.scale) && state.scale > 0 ? state.scale : 1;
+  if (safeScale !== state.scale) {
+    state.scale = clamp(safeScale, 0.25, 6);
   }
   const page = await getPdfPage(pageNum);
   const viewport = page.getViewport({ scale: state.scale, rotation: getEffectivePageRotation(page, pageNum) });
@@ -2037,27 +2062,36 @@ function queueLayoutRecoveryRender(options = {}) {
     }
     normalizeScaleGuard();
     state.viewerRenderRecoveryCount += 1;
-    if (els.pagesContainer.children.length === 0 && state.pageOrder.length > 0) {
-      await rebuildPageViews();
-      ensureCurrentPageExists();
-    }
-    applyPageVisibility();
-    clearHiddenPagesOutsideSingleFullscreen();
-    if (state.currentPage && state.pageViews.has(state.currentPage)) {
-      await renderPage(state.currentPage);
-    }
-    await goToPage(state.currentPage, false);
-    if (shouldApplyFullscreenFit(options)) {
-      await fitCurrentPageToViewport();
+    try {
+      if (els.pagesContainer.children.length === 0 && state.pageOrder.length > 0) {
+        await rebuildPageViews();
+        ensureCurrentPageExists();
+      }
+      applyPageVisibility();
+      clearHiddenPagesOutsideSingleFullscreen();
+      if (!isSinglePageFullscreen()) {
+        for (const view of state.pageViews.values()) {
+          view.wrap.classList.remove("hidden-page");
+        }
+      }
+      if (state.currentPage && state.pageViews.has(state.currentPage)) {
+        await renderPage(state.currentPage);
+      }
       await goToPage(state.currentPage, false);
-    } else if (isSinglePageFullscreen()) {
-      alignCurrentPageToViewerCenter();
+      if (shouldApplyFullscreenFit(options)) {
+        await fitCurrentPageToViewport();
+        await goToPage(state.currentPage, false);
+      } else if (isSinglePageFullscreen()) {
+        alignCurrentPageToViewerCenter();
+      }
+      await renderAllPages({ prioritizeVisible: true });
+      if (isSinglePageFullscreen()) {
+        alignCurrentPageToViewerCenter();
+      }
+      await ensureViewerPageVisible();
+    } catch (_error) {
+      await ensureViewerPageVisible();
     }
-    await renderAllPages({ prioritizeVisible: true });
-    if (isSinglePageFullscreen()) {
-      alignCurrentPageToViewerCenter();
-    }
-    await ensureViewerPageVisible();
     if (state.isFullScreen) {
       focusViewerPanel();
     }
