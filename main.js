@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const https = require("node:https");
 const { spawnSync } = require("node:child_process");
 
 let mainWindow = null;
@@ -16,6 +17,7 @@ let updateBusy = false;
 let appSettings = { language: "ko" };
 let pendingInstalledUpdate = null;
 let updateReleaseNotes = [];
+let updateReleaseNotesFetchPromise = null;
 
 let officeParserFn = null;
 let WordExtractorCtor = null;
@@ -301,6 +303,105 @@ function rememberReleaseNotes(info) {
   if (notes.length > 0) {
     updateReleaseNotes = notes;
   }
+}
+
+function requestJsonFromGitHubApi(apiPath) {
+  return new Promise((resolve) => {
+    if (!updateConfig?.owner || !updateConfig?.repo) {
+      resolve(null);
+      return;
+    }
+    const headers = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "lookup-updater"
+    };
+    const token = (process.env.GITHUB_TOKEN || process.env.LOOKUP_GITHUB_TOKEN || "").trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const request = https.request(
+      {
+        protocol: "https:",
+        hostname: "api.github.com",
+        path: apiPath,
+        method: "GET",
+        headers,
+        timeout: 4800
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          const statusCode = Number(response.statusCode || 0);
+          if (statusCode < 200 || statusCode >= 300) {
+            resolve(null);
+            return;
+          }
+          try {
+            const raw = Buffer.concat(chunks).toString("utf8");
+            resolve(JSON.parse(raw));
+          } catch (_error) {
+            resolve(null);
+          }
+        });
+      }
+    );
+    request.on("timeout", () => {
+      request.destroy(new Error("timeout"));
+    });
+    request.on("error", () => resolve(null));
+    request.end();
+  });
+}
+
+async function fetchReleaseNotesFromGitHub(versionText = "") {
+  if (!updateConfig?.owner || !updateConfig?.repo) {
+    return [];
+  }
+  const owner = encodeURIComponent(updateConfig.owner);
+  const repo = encodeURIComponent(updateConfig.repo);
+  const version = String(versionText || "").trim();
+  const tagCandidates = [];
+  if (version) {
+    if (version.toLowerCase().startsWith("v")) {
+      tagCandidates.push(version);
+    } else {
+      tagCandidates.push(`v${version}`);
+      tagCandidates.push(version);
+    }
+  }
+
+  for (const tag of tagCandidates) {
+    const release = await requestJsonFromGitHubApi(`/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`);
+    const lines = normalizeReleaseNotesLines(release?.body || "");
+    if (lines.length > 0) {
+      return lines;
+    }
+  }
+
+  const latestRelease = await requestJsonFromGitHubApi(`/repos/${owner}/${repo}/releases/latest`);
+  return normalizeReleaseNotesLines(latestRelease?.body || "");
+}
+
+function ensureUpdateReleaseNotes(versionText = "") {
+  if (updateReleaseNotes.length > 0) {
+    return Promise.resolve(updateReleaseNotes);
+  }
+  if (updateReleaseNotesFetchPromise) {
+    return updateReleaseNotesFetchPromise;
+  }
+
+  updateReleaseNotesFetchPromise = (async () => {
+    const fetched = await fetchReleaseNotesFromGitHub(versionText);
+    if (fetched.length > 0) {
+      updateReleaseNotes = fetched;
+    }
+    return updateReleaseNotes;
+  })().finally(() => {
+    updateReleaseNotesFetchPromise = null;
+  });
+
+  return updateReleaseNotesFetchPromise;
 }
 
 function markInstalledVersion(version, releaseNotes = []) {
@@ -1002,13 +1103,20 @@ function createWindow() {
     mainWindow?.show();
   });
 
-  mainWindow.webContents.on("did-finish-load", () => {
+  mainWindow.webContents.on("did-finish-load", async () => {
     if (pendingDocumentToOpen) {
       sendToRenderer("system-open-file", pendingDocumentToOpen);
       pendingDocumentToOpen = null;
     }
     sendToRenderer("window-fullscreen-changed", mainWindow?.isFullScreen() ?? false);
     if (pendingInstalledUpdate?.version) {
+      if (!Array.isArray(pendingInstalledUpdate.releaseNotes) || pendingInstalledUpdate.releaseNotes.length === 0) {
+        updateConfig = updateConfig || loadUpdateConfig();
+        const fetchedNotes = await fetchReleaseNotesFromGitHub(pendingInstalledUpdate.version);
+        if (fetchedNotes.length > 0) {
+          pendingInstalledUpdate.releaseNotes = fetchedNotes;
+        }
+      }
       sendUpdateStatus("installed", {
         stage: "installed",
         targetVersion: pendingInstalledUpdate.version,
@@ -1116,9 +1224,10 @@ function setupAutoUpdater() {
   updateTargetVersion = "";
   updateInstallTriggered = false;
   updateReleaseNotes = [];
+  updateReleaseNotesFetchPromise = null;
   setUpdateBusy(false);
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.autoRunAppAfterInstall = true;
   if (!app.isPackaged) {
     autoUpdater.forceDevUpdateConfig = true;
@@ -1146,11 +1255,24 @@ function setupAutoUpdater() {
       releaseNotes: updateReleaseNotes,
       message: `새 버전 v${updateTargetVersion}을 찾았습니다. 업데이트 중입니다.`
     });
+    void ensureUpdateReleaseNotes(updateTargetVersion).then((notes) => {
+      if (!notes.length) {
+        return;
+      }
+      sendUpdateStatus("available", {
+        stage: "downloading",
+        targetVersion: updateTargetVersion,
+        percent: 0,
+        releaseNotes: notes,
+        message: `새 버전 v${updateTargetVersion}을 찾았습니다. 업데이트 중입니다.`
+      });
+    });
   });
 
   autoUpdater.on("update-not-available", () => {
     updateTargetVersion = "";
     updateReleaseNotes = [];
+    updateReleaseNotesFetchPromise = null;
     setUpdateBusy(false);
     sendUpdateStatus("not-available", { stage: "idle", percent: 100, message: "현재 최신 버전입니다." });
   });
@@ -1182,12 +1304,18 @@ function setupAutoUpdater() {
     });
 
     if (app.isPackaged) {
-      const triggerInstall = () => {
+      const triggerInstall = async () => {
         if (updateInstallTriggered) {
           return;
         }
         try {
           updateInstallTriggered = true;
+          if (!updateReleaseNotes.length) {
+            await Promise.race([
+              ensureUpdateReleaseNotes(updateTargetVersion),
+              new Promise((resolve) => setTimeout(resolve, 1800))
+            ]);
+          }
           markInstalledVersion(updateTargetVersion || app.getVersion(), updateReleaseNotes);
           sendUpdateStatus("installing", {
             stage: "restarting",
@@ -1207,10 +1335,12 @@ function setupAutoUpdater() {
           });
         }
       };
-      setTimeout(triggerInstall, 280);
+      setTimeout(() => {
+        void triggerInstall();
+      }, 280);
       setTimeout(() => {
         if (!updateInstallTriggered) {
-          triggerInstall();
+          void triggerInstall();
         }
       }, 2200);
     }
@@ -1229,6 +1359,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on("error", (error) => {
     setUpdateBusy(false);
+    updateReleaseNotesFetchPromise = null;
     sendUpdateStatus("error", {
       stage: "error",
       message: `업데이트 오류: ${error?.message || "알 수 없는 오류"}`

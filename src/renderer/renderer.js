@@ -704,12 +704,23 @@ function getEffectiveRightPanelVisible() {
   return state.searchPanelVisible;
 }
 
+function applyWorkspaceColumnSizes(leftVisible, rightVisible) {
+  const leftWidth = leftVisible ? Math.round(state.leftPanelWidth) : 0;
+  const rightWidth = rightVisible ? Math.round(state.rightPanelWidth) : 0;
+  const leftResizerWidth = leftVisible ? 8 : 0;
+  const rightResizerWidth = rightVisible ? 8 : 0;
+
+  els.workspace.style.setProperty("--left-panel-width", `${leftWidth}px`);
+  els.workspace.style.setProperty("--right-panel-width", `${rightWidth}px`);
+  els.workspace.style.setProperty("--left-resizer-width", `${leftResizerWidth}px`);
+  els.workspace.style.setProperty("--right-resizer-width", `${rightResizerWidth}px`);
+}
+
 function applyPanelLayout() {
   const leftVisible = getEffectiveLeftPanelVisible();
   const rightVisible = getEffectiveRightPanelVisible();
 
-  els.workspace.style.setProperty("--left-panel-width", `${Math.round(state.leftPanelWidth)}px`);
-  els.workspace.style.setProperty("--right-panel-width", `${Math.round(state.rightPanelWidth)}px`);
+  applyWorkspaceColumnSizes(leftVisible, rightVisible);
   els.workspace.classList.toggle("left-collapsed", !leftVisible);
   els.workspace.classList.toggle("right-collapsed", !rightVisible);
   els.thumbPanel.classList.toggle("hidden", !leftVisible);
