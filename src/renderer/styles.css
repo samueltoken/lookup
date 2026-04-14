@@ -159,6 +159,58 @@ body {
   display: none !important;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(8, 12, 18, 0.48);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.modal-card {
+  width: min(580px, 100%);
+  max-height: min(76vh, 620px);
+  border-radius: 14px;
+  border: 1px solid #d4deec;
+  background: #ffffff;
+  box-shadow: 0 24px 56px rgba(10, 18, 32, 0.24);
+  padding: 14px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .page-input,
 .search-input {
   border: 1px solid var(--line);
@@ -321,6 +373,7 @@ body {
 
 .pages-container {
   min-height: 100%;
+  width: 100%;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -559,7 +612,8 @@ body.dark .search-input,
 body.dark .thumb-item,
 body.dark .search-result-item,
 body.dark .text-memo-input,
-body.dark .text-memo-editor {
+body.dark .text-memo-editor,
+body.dark .modal-card {
   background: #243246;
   color: #dde6ef;
   border-color: #4a5c74;

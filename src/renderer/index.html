@@ -145,6 +145,19 @@
       </footer>
     </div>
 
+    <div id="updateNotesModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="updateNotesTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2 id="updateNotesTitle" data-i18n="updateNotesTitle">업데이트 완료</h2>
+          <span id="updateNotesVersion" class="muted"></span>
+        </div>
+        <ul id="updateNotesList" class="modal-list"></ul>
+        <div class="modal-actions">
+          <button id="updateNotesCloseBtn" class="action primary" data-i18n="updateNotesClose">확인</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="./renderer.js"></script>
   </body>
 </html>

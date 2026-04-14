@@ -113,6 +113,9 @@ const i18n = {
     updateStageInstalled: "업데이트 완료",
     updateStageError: "업데이트 오류",
     updateBusyMessage: "업데이트가 이미 진행 중입니다.",
+    updateNotesTitle: "업데이트 완료",
+    updateNotesFallback: "변경 사항 요약을 불러오지 못했습니다.",
+    updateNotesClose: "확인",
     openErrorNotFound: "파일을 찾을 수 없습니다. 경로를 확인해 주세요.",
     openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
     openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
@@ -185,6 +188,9 @@ const i18n = {
     updateStageInstalled: "Update complete",
     updateStageError: "Update error",
     updateBusyMessage: "An update is already in progress.",
+    updateNotesTitle: "Update completed",
+    updateNotesFallback: "Unable to load the release notes.",
+    updateNotesClose: "Close",
     openErrorNotFound: "File not found. Please check the path.",
     openErrorPermission: "No permission to open this file.",
     openErrorUnsupported: "Unsupported file format.",
@@ -258,12 +264,15 @@ const state = {
   updateBusy: false,
   updateStage: "idle",
   updateBannerHideTimer: 0,
+  layoutRecoveryToken: 0,
   language: localStorage.getItem(storage.language) === "en" ? "en" : "ko",
   applyingLanguage: false,
   pendingZoomJob: null,
   zoomJobRunning: false,
   viewerRenderRecoveryCount: 0,
   thumbRerenderTimer: 0,
+  pageRenderTasks: new Map(),
+  thumbRenderTasks: new Map(),
   historyPast: [],
   historyFuture: [],
   historyRestoring: false,
@@ -317,6 +326,11 @@ const els = {
   updateStageText: document.getElementById("updateStageText"),
   updateBannerPercentText: document.getElementById("updateBannerPercentText"),
   updateBannerBar: document.getElementById("updateBannerBar"),
+  updateNotesModal: document.getElementById("updateNotesModal"),
+  updateNotesTitle: document.getElementById("updateNotesTitle"),
+  updateNotesVersion: document.getElementById("updateNotesVersion"),
+  updateNotesList: document.getElementById("updateNotesList"),
+  updateNotesCloseBtn: document.getElementById("updateNotesCloseBtn"),
   statusBar: document.getElementById("statusBar"),
   statusText: document.getElementById("statusText"),
   currentVersionLabel: document.getElementById("currentVersionLabel"),
@@ -497,6 +511,12 @@ function applyLanguageToStaticTexts() {
     if (els.textMemoCancelBtn) {
       els.textMemoCancelBtn.textContent = t("textMemoCancel");
     }
+    if (els.updateNotesTitle) {
+      els.updateNotesTitle.textContent = t("updateNotesTitle");
+    }
+    if (els.updateNotesCloseBtn) {
+      els.updateNotesCloseBtn.textContent = t("updateNotesClose");
+    }
     updateSearchCountText();
     updateVersionLabels();
     els.updateStageText.textContent = updateStageLabel(state.updateStage);
@@ -617,6 +637,12 @@ function getRotation(pageNum) {
   return state.pageRotations.get(pageNum) || 0;
 }
 
+function getEffectivePageRotation(page, pageNum) {
+  const baseRotation = Number(page?.rotate || 0);
+  const userRotation = getRotation(pageNum);
+  return ((baseRotation + userRotation) % 360 + 360) % 360;
+}
+
 function getCurrentDisplayIndex() {
   return state.pageOrder.indexOf(state.currentPage);
 }
@@ -686,6 +712,10 @@ function applyPanelLayout() {
   els.workspace.style.setProperty("--right-panel-width", `${Math.round(state.rightPanelWidth)}px`);
   els.workspace.classList.toggle("left-collapsed", !leftVisible);
   els.workspace.classList.toggle("right-collapsed", !rightVisible);
+  els.thumbPanel.classList.toggle("hidden", !leftVisible);
+  els.leftResizer.classList.toggle("hidden", !leftVisible);
+  els.searchPanel.classList.toggle("hidden", !rightVisible);
+  els.rightResizer.classList.toggle("hidden", !rightVisible);
 
   els.toggleThumbPanelBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
   els.toggleSearchPanelBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
@@ -797,6 +827,43 @@ function updateVersionLabels(currentVersion = state.appVersion, targetVersion = 
   }
 }
 
+function toReleaseNoteLines(releaseNotes) {
+  const source = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
+  const lines = source
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .filter(Boolean);
+  return lines.slice(0, 80);
+}
+
+function hideUpdateNotesModal() {
+  if (!els.updateNotesModal) {
+    return;
+  }
+  els.updateNotesModal.classList.add("hidden");
+}
+
+function showUpdateNotesModal(version, releaseNotes) {
+  if (!els.updateNotesModal || !els.updateNotesList) {
+    return;
+  }
+  const lines = toReleaseNoteLines(releaseNotes);
+  els.updateNotesVersion.textContent = version ? `v${version}` : "";
+  els.updateNotesList.innerHTML = "";
+  if (!lines.length) {
+    const li = document.createElement("li");
+    li.textContent = t("updateNotesFallback");
+    els.updateNotesList.appendChild(li);
+  } else {
+    lines.forEach((line) => {
+      const li = document.createElement("li");
+      li.textContent = line;
+      els.updateNotesList.appendChild(li);
+    });
+  }
+  els.updateNotesModal.classList.remove("hidden");
+}
+
 function updateFullscreenButtons() {
   els.toggleFullscreenBtn.textContent = state.isFullScreen ? t("fullscreenExit") : t("fullscreen");
   els.toggleFullscreenViewModeBtn.textContent =
@@ -810,6 +877,17 @@ function applyPageVisibility() {
     const hidden = singleMode && pageNum !== state.currentPage;
     view.wrap.classList.toggle("hidden-page", hidden);
   }
+}
+
+function ensureCurrentPageVisibleInSingleMode() {
+  if (!isSinglePageFullscreen()) {
+    return;
+  }
+  const currentView = state.pageViews.get(state.currentPage);
+  if (!currentView) {
+    return;
+  }
+  currentView.wrap.classList.remove("hidden-page");
 }
 
 function updateToolbarState() {
@@ -934,7 +1012,7 @@ async function renderPage(pageNum) {
     return;
   }
   const page = await getPdfPage(pageNum);
-  const viewport = page.getViewport({ scale: state.scale, rotation: getRotation(pageNum) });
+  const viewport = page.getViewport({ scale: state.scale, rotation: getEffectivePageRotation(page, pageNum) });
   view.viewport = viewport;
 
   view.wrap.style.width = `${viewport.width}px`;
@@ -958,39 +1036,66 @@ async function renderPage(pageNum) {
   syncCanvasSize();
 
   const renderToken = ++view.renderToken;
-  const context = canvas.getContext("2d", { alpha: false });
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  let rendered = false;
-  try {
-    await page.render({
+  const previousTask = state.pageRenderTasks.get(pageNum);
+  if (previousTask && typeof previousTask.cancel === "function") {
+    try {
+      previousTask.cancel();
+    } catch (_error) {
+      // ignore cancellation errors
+    }
+  }
+
+  const renderOnce = async (quality) => {
+    const context = canvas.getContext("2d", { alpha: false });
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = quality;
+    const renderTask = page.render({
       canvasContext: context,
       viewport,
       transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-    }).promise;
-    rendered = true;
+    });
+    state.pageRenderTasks.set(pageNum, renderTask);
+    try {
+      await renderTask.promise;
+      return "ok";
+    } catch (error) {
+      if (error?.name === "RenderingCancelledException") {
+        return "cancelled";
+      }
+      throw error;
+    } finally {
+      if (state.pageRenderTasks.get(pageNum) === renderTask) {
+        state.pageRenderTasks.delete(pageNum);
+      }
+    }
+  };
+
+  let rendered = false;
+  try {
+    const result = await renderOnce("high");
+    if (result === "cancelled") {
+      return;
+    }
+    rendered = result === "ok";
   } catch (_error) {
     renderScale = computeSafeRenderScale(viewport.width, viewport.height, renderScale * 0.72);
     syncCanvasSize();
-    const retryContext = canvas.getContext("2d", { alpha: false });
-    retryContext.imageSmoothingEnabled = true;
-    retryContext.imageSmoothingQuality = "medium";
     try {
-      await page.render({
-        canvasContext: retryContext,
-        viewport,
-        transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-      }).promise;
-      rendered = true;
+      const retry = await renderOnce("medium");
+      if (retry === "cancelled") {
+        return;
+      }
+      rendered = retry === "ok";
     } catch (_secondError) {
       rendered = false;
     }
   }
   if (!rendered) {
+    const context = canvas.getContext("2d", { alpha: false });
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
   }
-  if (renderToken !== view.renderToken || renderToken !== state.renderVersion) {
+  if (renderToken !== view.renderToken) {
     return;
   }
 
@@ -1072,6 +1177,16 @@ async function renderAllPages(options = {}) {
   if (!state.pdfDoc) {
     return;
   }
+  for (const renderTask of state.pageRenderTasks.values()) {
+    if (renderTask && typeof renderTask.cancel === "function") {
+      try {
+        renderTask.cancel();
+      } catch (_error) {
+        // ignore cancellation errors
+      }
+    }
+  }
+  state.pageRenderTasks.clear();
   const version = ++state.renderVersion;
   const prioritizeVisible = options.prioritizeVisible !== false;
   if (!prioritizeVisible) {
@@ -1086,11 +1201,12 @@ async function renderAllPages(options = {}) {
 
 async function renderThumbnail(pageNum, thumbCanvas) {
   const page = await getPdfPage(pageNum);
-  const viewport = page.getViewport({ scale: 1, rotation: getRotation(pageNum) });
+  const rotation = getEffectivePageRotation(page, pageNum);
+  const viewport = page.getViewport({ scale: 1, rotation });
   const panelWidth = Math.max(120, els.thumbnailList.clientWidth || state.leftPanelWidth - 20);
   const targetWidth = clamp(panelWidth - 8, 120, 860);
   const thumbScale = targetWidth / viewport.width;
-  const scaledViewport = page.getViewport({ scale: thumbScale, rotation: getRotation(pageNum) });
+  const scaledViewport = page.getViewport({ scale: thumbScale, rotation });
   const dpr = window.devicePixelRatio || 1;
   let renderScale = computeSafeRenderScale(scaledViewport.width, scaledViewport.height, dpr * state.thumbRenderQuality);
   const context = thumbCanvas.getContext("2d", { alpha: false });
@@ -1102,21 +1218,50 @@ async function renderThumbnail(pageNum, thumbCanvas) {
   thumbCanvas.style.width = `${scaledViewport.width}px`;
   thumbCanvas.style.height = `${scaledViewport.height}px`;
 
-  try {
-    await page.render({
+  const previousTask = state.thumbRenderTasks.get(pageNum);
+  if (previousTask && typeof previousTask.cancel === "function") {
+    try {
+      previousTask.cancel();
+    } catch (_error) {
+      // ignore cancellation errors
+    }
+  }
+
+  const renderThumbOnce = async () => {
+    const task = page.render({
       canvasContext: context,
       viewport: scaledViewport,
       transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-    }).promise;
+    });
+    state.thumbRenderTasks.set(pageNum, task);
+    try {
+      await task.promise;
+      return "ok";
+    } catch (error) {
+      if (error?.name === "RenderingCancelledException") {
+        return "cancelled";
+      }
+      throw error;
+    } finally {
+      if (state.thumbRenderTasks.get(pageNum) === task) {
+        state.thumbRenderTasks.delete(pageNum);
+      }
+    }
+  };
+
+  try {
+    const result = await renderThumbOnce();
+    if (result === "cancelled") {
+      return;
+    }
   } catch (_error) {
     renderScale = computeSafeRenderScale(scaledViewport.width, scaledViewport.height, renderScale * 0.72);
     thumbCanvas.width = Math.max(1, Math.floor(scaledViewport.width * renderScale));
     thumbCanvas.height = Math.max(1, Math.floor(scaledViewport.height * renderScale));
-    await page.render({
-      canvasContext: context,
-      viewport: scaledViewport,
-      transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
-    }).promise;
+    const retry = await renderThumbOnce();
+    if (retry === "cancelled") {
+      return;
+    }
   }
 }
 
@@ -1341,7 +1486,7 @@ async function fitCurrentPageToViewport() {
     return;
   }
   const page = await getPdfPage(state.currentPage);
-  const baseViewport = page.getViewport({ scale: 1, rotation: getRotation(state.currentPage) });
+  const baseViewport = page.getViewport({ scale: 1, rotation: getEffectivePageRotation(page, state.currentPage) });
   const maxWidth = Math.max(100, els.viewerPanel.clientWidth - 42);
   const maxHeight = Math.max(100, els.viewerPanel.clientHeight - 44);
   const fitWidthScale = maxWidth / Math.max(1, baseViewport.width);
@@ -1368,8 +1513,12 @@ function queueLayoutRecoveryRender(options = {}) {
   if (!state.pdfDoc) {
     return;
   }
+  const token = ++state.layoutRecoveryToken;
   const attempt = Number(options.attempt || 0);
   const runRecovery = async () => {
+    if (token !== state.layoutRecoveryToken) {
+      return;
+    }
     ensureCurrentPageExists();
     if (!viewerSizeIsValid()) {
       if (attempt < 5) {
@@ -1379,14 +1528,24 @@ function queueLayoutRecoveryRender(options = {}) {
       }
       return;
     }
+    if (token !== state.layoutRecoveryToken) {
+      return;
+    }
     state.viewerRenderRecoveryCount += 1;
     applyPageVisibility();
-    await renderAllPages({ prioritizeVisible: true });
+    ensureCurrentPageVisibleInSingleMode();
+    if (state.currentPage && state.pageViews.has(state.currentPage)) {
+      await renderPage(state.currentPage);
+    }
     await goToPage(state.currentPage, false);
     if (shouldApplyFullscreenFit(options)) {
       await fitCurrentPageToViewport();
       await goToPage(state.currentPage, false);
     } else if (isSinglePageFullscreen()) {
+      alignCurrentPageToViewerCenter();
+    }
+    await renderAllPages({ prioritizeVisible: true });
+    if (isSinglePageFullscreen()) {
       alignCurrentPageToViewerCenter();
     }
     if (state.isFullScreen) {
@@ -1822,10 +1981,11 @@ async function ensureOcrItems(pageNum) {
   }
   const promise = (async () => {
     const page = await getPdfPage(pageNum);
-    const baseViewport = page.getViewport({ scale: 1, rotation: getRotation(pageNum) });
+    const effectiveRotation = getEffectivePageRotation(page, pageNum);
+    const baseViewport = page.getViewport({ scale: 1, rotation: effectiveRotation });
     const longerEdge = Math.max(baseViewport.width, baseViewport.height);
     const rasterScale = clamp(2100 / Math.max(1, longerEdge), 1, 3);
-    const rasterViewport = page.getViewport({ scale: rasterScale, rotation: getRotation(pageNum) });
+    const rasterViewport = page.getViewport({ scale: rasterScale, rotation: effectiveRotation });
     const rasterCanvas = document.createElement("canvas");
     rasterCanvas.width = Math.max(1, Math.round(rasterViewport.width));
     rasterCanvas.height = Math.max(1, Math.round(rasterViewport.height));
@@ -1984,6 +2144,12 @@ async function performSearch(rawQuery, jumpFirst = true) {
     return;
   }
 
+  if (!state.isFullScreen) {
+    state.searchPanelVisible = true;
+    applyPanelLayout();
+    persistLayoutState();
+  }
+
   setStatus(state.language === "en" ? "Searching..." : "검색 중...");
   let ocrUsed = false;
   for (const pageNum of state.pageOrder) {
@@ -2051,11 +2217,6 @@ async function performSearch(rawQuery, jumpFirst = true) {
     return;
   }
 
-  if (!state.isFullScreen) {
-    state.searchPanelVisible = true;
-    applyPanelLayout();
-    persistLayoutState();
-  }
   if (ocrUsed) {
     setStatus(state.language === "en" ? `Found ${state.searchMatches.length} result(s).` : `${state.searchMatches.length}개 결과를 찾았습니다.`);
   }
@@ -2504,6 +2665,26 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.searchPageCache.clear();
   state.ocrWordCache.clear();
   state.ocrPagePromises.clear();
+  for (const renderTask of state.pageRenderTasks.values()) {
+    if (renderTask && typeof renderTask.cancel === "function") {
+      try {
+        renderTask.cancel();
+      } catch (_error) {
+        // ignore cancellation errors
+      }
+    }
+  }
+  for (const renderTask of state.thumbRenderTasks.values()) {
+    if (renderTask && typeof renderTask.cancel === "function") {
+      try {
+        renderTask.cancel();
+      } catch (_error) {
+        // ignore cancellation errors
+      }
+    }
+  }
+  state.pageRenderTasks.clear();
+  state.thumbRenderTasks.clear();
   state.ocrErrorShown = false;
   clearSearchState();
   state.scale = 1;
@@ -2643,7 +2824,7 @@ function toggleLeftPanelVisibility() {
   if (getEffectiveLeftPanelVisible()) {
     queueThumbnailRerender();
   }
-  const forceFit = state.isFullScreen && (isSinglePageFullscreen() || state.zoomMode !== "manual");
+  const forceFit = state.isFullScreen && state.zoomMode !== "manual";
   if (forceFit) {
     setZoomMode("fit");
     state.fullScreenAutoFitDone = false;
@@ -2841,6 +3022,16 @@ function bindToolbarActions() {
       }
     });
   }
+  if (els.updateNotesCloseBtn) {
+    els.updateNotesCloseBtn.addEventListener("click", () => hideUpdateNotesModal());
+  }
+  if (els.updateNotesModal) {
+    els.updateNotesModal.addEventListener("click", (event) => {
+      if (event.target === els.updateNotesModal) {
+        hideUpdateNotesModal();
+      }
+    });
+  }
 }
 
 function bindWindowActions() {
@@ -2874,6 +3065,11 @@ function bindWindowActions() {
     const isTypingTarget =
       active &&
       (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable === true);
+    if (event.key === "Escape" && els.updateNotesModal && !els.updateNotesModal.classList.contains("hidden")) {
+      event.preventDefault();
+      hideUpdateNotesModal();
+      return;
+    }
     if (event.key === "Escape" && state.pendingTextMemo) {
       event.preventDefault();
       closeTextMemoEditor();
@@ -3033,14 +3229,14 @@ function bindMainProcessEvents() {
       state.fullScreenAutoFitDone = false;
       setZoomMode("fit");
       els.fullscreenMiniBar.classList.remove("hidden");
-      els.searchPanel.classList.add("hidden");
     } else {
       els.fullscreenMiniBar.classList.add("hidden");
-      els.searchPanel.classList.toggle("hidden", !state.searchPanelVisible);
     }
 
     applyPanelLayout();
+    ensureCurrentPageExists();
     applyPageVisibility();
+    ensureCurrentPageVisibleInSingleMode();
     updateToolbarState();
     persistLayoutState();
     if (isFullScreen) {
@@ -3082,6 +3278,9 @@ function bindMainProcessEvents() {
     updateVersionLabels();
     if (payload.message) {
       setStatus(payload.message, payload.status === "error");
+    }
+    if (normalizedStage === "installed") {
+      showUpdateNotesModal(payload.targetVersion || state.appVersion, payload.releaseNotes || []);
     }
   });
 }
@@ -3142,10 +3341,8 @@ async function init() {
     state.fullScreenAutoFitDone = false;
     setZoomMode("fit");
     els.fullscreenMiniBar.classList.remove("hidden");
-    els.searchPanel.classList.add("hidden");
   } else {
     els.fullscreenMiniBar.classList.add("hidden");
-    els.searchPanel.classList.toggle("hidden", !state.searchPanelVisible);
   }
   applyPanelLayout();
   updateFullscreenButtons();
@@ -3153,6 +3350,7 @@ async function init() {
   focusViewerPanel();
   showUpdateProgressBar(false);
   showUpdateBanner(false);
+  hideUpdateNotesModal();
   setUpdateProgress(0);
   els.updateStageText.textContent = updateStageLabel("idle");
   await syncWindowTitle("");
