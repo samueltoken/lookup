@@ -519,7 +519,9 @@ function applyLanguageToStaticTexts() {
     }
     updateSearchCountText();
     updateVersionLabels();
-    els.updateStageText.textContent = updateStageLabel(state.updateStage);
+    if (els.updateStageText) {
+      els.updateStageText.textContent = updateStageLabel(state.updateStage);
+    }
     applyPanelLayout();
     updateFullscreenButtons();
     updateToolbarState();
@@ -783,7 +785,11 @@ function showUpdateBanner(show) {
     clearTimeout(state.updateBannerHideTimer);
     state.updateBannerHideTimer = 0;
   }
-  els.updateBanner.classList.toggle("hidden", !show);
+  if (!els.updateBanner) {
+    return;
+  }
+  // v1.1.9부터 상단 큰 배너는 기본 동선에서 사용하지 않는다.
+  els.updateBanner.classList.add("hidden");
 }
 
 function showUpdateProgressBar(show) {
@@ -794,14 +800,20 @@ function setUpdateProgress(percent) {
   const safe = clamp(Math.round(percent), 0, 100);
   els.updateProgressBar.style.width = `${safe}%`;
   els.updateProgressText.textContent = `${safe}%`;
-  els.updateBannerBar.style.width = `${safe}%`;
-  els.updateBannerPercentText.textContent = `${safe}%`;
+  if (els.updateBannerBar) {
+    els.updateBannerBar.style.width = `${safe}%`;
+  }
+  if (els.updateBannerPercentText) {
+    els.updateBannerPercentText.textContent = `${safe}%`;
+  }
 }
 
 function applyUpdateVisualState(status, stage, percent) {
   const normalized = normalizeUpdateStage(stage || status);
   state.updateStage = normalized;
-  els.updateStageText.textContent = updateStageLabel(normalized);
+  if (els.updateStageText) {
+    els.updateStageText.textContent = updateStageLabel(normalized);
+  }
   if (typeof percent === "number") {
     setUpdateProgress(percent);
   } else if (normalized === "restarting" || normalized === "ready" || normalized === "installed") {
@@ -838,13 +850,41 @@ function updateVersionLabels(currentVersion = state.appVersion, targetVersion = 
   }
 }
 
+function sanitizeReleaseNotesText(value) {
+  let text = String(value || "").replace(/\uFEFF/g, "");
+  text = text.replace(/```[\s\S]*?```/g, " ");
+  text = text.replace(/`([^`]+)`/g, " $1 ");
+  text = text.replace(/<\/?[^>]+>/g, " ");
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+  text = text.replace(/[>*_~]/g, " ");
+  text = text.replace(/\r/g, "");
+  return text;
+}
+
 function toReleaseNoteLines(releaseNotes) {
   const source = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
-  const lines = source
+  const lines = sanitizeReleaseNotesText(source)
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .map((line) => line.replace(/^[\s#\-*•\d.)]+/, "").trim())
     .filter(Boolean);
-  return lines.slice(0, 80);
+  const deduped = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const normalized = line.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(normalized);
+    if (deduped.length >= 80) {
+      break;
+    }
+  }
+  return deduped;
 }
 
 function hideUpdateNotesModal() {
@@ -1492,6 +1532,73 @@ function viewerSizeIsValid() {
   return els.viewerPanel.clientWidth > 80 && els.viewerPanel.clientHeight > 80;
 }
 
+function countPagesIntersectingViewer() {
+  const panelRect = els.viewerPanel.getBoundingClientRect();
+  let count = 0;
+  for (const pageNum of state.pageOrder) {
+    const view = state.pageViews.get(pageNum);
+    if (!view || view.wrap.classList.contains("hidden-page")) {
+      continue;
+    }
+    const rect = view.wrap.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4) {
+      continue;
+    }
+    const intersects =
+      rect.bottom > panelRect.top + 2 &&
+      rect.top < panelRect.bottom - 2 &&
+      rect.right > panelRect.left + 2 &&
+      rect.left < panelRect.right - 2;
+    if (intersects) {
+      count += 1;
+      if (count > 0) {
+        return count;
+      }
+    }
+  }
+  return count;
+}
+
+async function ensureViewerPageVisible() {
+  if (!state.pdfDoc || !state.pageOrder.length) {
+    return;
+  }
+  if (countPagesIntersectingViewer() > 0) {
+    return;
+  }
+
+  ensureCurrentPageExists();
+  const currentView = state.pageViews.get(state.currentPage);
+  if (currentView) {
+    currentView.wrap.classList.remove("hidden-page");
+  }
+  if (state.currentPage) {
+    await renderPage(state.currentPage);
+    await goToPage(state.currentPage, false);
+    if (isSinglePageFullscreen()) {
+      alignCurrentPageToViewerCenter();
+    }
+  }
+  if (countPagesIntersectingViewer() > 0) {
+    return;
+  }
+
+  // 최종 안전 복구: 문서 뷰를 다시 만들고 현재 페이지를 다시 보장한다.
+  await rebuildPageViews();
+  ensureCurrentPageExists();
+  const rebuiltView = state.pageViews.get(state.currentPage);
+  if (rebuiltView) {
+    rebuiltView.wrap.classList.remove("hidden-page");
+  }
+  if (state.currentPage) {
+    await renderPage(state.currentPage);
+    await goToPage(state.currentPage, false);
+    if (isSinglePageFullscreen()) {
+      alignCurrentPageToViewerCenter();
+    }
+  }
+}
+
 async function fitCurrentPageToViewport() {
   if (!state.pdfDoc || !state.currentPage) {
     return;
@@ -1559,6 +1666,7 @@ function queueLayoutRecoveryRender(options = {}) {
     if (isSinglePageFullscreen()) {
       alignCurrentPageToViewerCenter();
     }
+    await ensureViewerPageVisible();
     if (state.isFullScreen) {
       focusViewerPanel();
     }
@@ -3363,7 +3471,9 @@ async function init() {
   showUpdateBanner(false);
   hideUpdateNotesModal();
   setUpdateProgress(0);
-  els.updateStageText.textContent = updateStageLabel("idle");
+  if (els.updateStageText) {
+    els.updateStageText.textContent = updateStageLabel("idle");
+  }
   await syncWindowTitle("");
   initializeUpdateStatus().catch((error) => {
     setStatus(error?.message || "업데이트 초기화 오류", true);

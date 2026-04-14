@@ -266,11 +266,35 @@ function getUpdateMarkerFilePath() {
 
 function normalizeReleaseNotesLines(releaseNotes) {
   const raw = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
-  const lines = raw
+  const plainText = raw
+    .replace(/\uFEFF/g, "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, " $1 ")
+    .replace(/<\/?[^>]+>/g, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/[>*_~]/g, " ");
+  const lines = plainText
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .map((line) => line.replace(/^[\s#\-*•\d.)]+/, "").trim())
     .filter(Boolean);
-  return lines.slice(0, 80);
+  const result = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const normalized = line.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+    if (result.length >= 80) {
+      break;
+    }
+  }
+  return result;
 }
 
 function extractReleaseNotes(info) {
