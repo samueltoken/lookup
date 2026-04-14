@@ -25,6 +25,7 @@ const storage = {
   darkMode: "lookup-dark-mode",
   language: "lookup-language",
   fullscreenMode: "lookup-fullscreen-view-mode",
+  viewMode: "lookup-view-mode",
   ribbonTab: "lookup-ribbon-tab",
   leftPanelWidth: "lookup-left-panel-width",
   rightPanelWidth: "lookup-right-panel-width",
@@ -106,6 +107,12 @@ const i18n = {
     dropHint: "문서를 끌어놓거나 열기 버튼을 눌러 주세요.",
     fullscreenModeContinuous: "전체화면: 연속 스크롤",
     fullscreenModeSingle: "전체화면: 현재 페이지",
+    viewModeSingle: "단면 보기",
+    viewModeSpread: "양면 보기",
+    viewModeFocus: "현재 페이지만 보기",
+    viewModeSingleTip: "단면 보기",
+    viewModeSpreadTip: "양면 보기",
+    viewModeFocusTip: "현재 페이지만 보기",
     searchResults: "검색 결과",
     copiedContact: "개발자 이메일이 복사되었습니다.",
     languageChangedKo: "언어가 한국어로 변경되었습니다.",
@@ -212,6 +219,12 @@ const i18n = {
     dropHint: "Drop a document or click Open.",
     fullscreenModeContinuous: "Fullscreen: Continuous",
     fullscreenModeSingle: "Fullscreen: Single Page",
+    viewModeSingle: "Single Page",
+    viewModeSpread: "Two-Page Spread",
+    viewModeFocus: "Focus Page",
+    viewModeSingleTip: "Single page view",
+    viewModeSpreadTip: "Two-page spread",
+    viewModeFocusTip: "Focus on current page only",
     searchResults: "Search Results",
     copiedContact: "Developer email copied to clipboard.",
     languageChangedKo: "Language switched to Korean.",
@@ -303,7 +316,13 @@ const ICON_SVG = {
   zoomOut:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.8"/><path d="m15 15 5.5 5.5"/><path d="M8 10.5h5"/></svg>',
   zoomReset:
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z"/></svg>'
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8v8H8z"/></svg>',
+  viewSingle:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="1.8"/><path d="M8.5 8.5h7"/><path d="M8.5 12h7"/><path d="M8.5 15.5h5.5"/></svg>',
+  viewSpread:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="8.5" height="14" rx="1.5"/><rect x="12" y="5" width="8.5" height="14" rx="1.5"/><path d="M12 5v14"/></svg>',
+  viewFocus:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/><rect x="8" y="8" width="8" height="8" rx="1.2"/></svg>'
 };
 
 function getIconSvg(name) {
@@ -344,6 +363,9 @@ const state = {
   thumbRenderVersion: 0,
   isFullScreen: false,
   fullScreenViewMode: localStorage.getItem(storage.fullscreenMode) || "continuous",
+  viewMode: ["single", "spread", "focus"].includes(localStorage.getItem(storage.viewMode) || "")
+    ? localStorage.getItem(storage.viewMode)
+    : "single",
   activeRibbonTab: ["home", "view", "annotate", "tools"].includes(localStorage.getItem(storage.ribbonTab) || "")
     ? localStorage.getItem(storage.ribbonTab)
     : "home",
@@ -422,6 +444,9 @@ const els = {
   toggleSearchPanelBtn: document.getElementById("toggleSearchPanelBtn"),
   toggleFullscreenBtn: document.getElementById("toggleFullscreenBtn"),
   toggleDarkBtn: document.getElementById("toggleDarkBtn"),
+  viewSingleBtn: document.getElementById("viewSingleBtn"),
+  viewSpreadBtn: document.getElementById("viewSpreadBtn"),
+  viewFocusBtn: document.getElementById("viewFocusBtn"),
   quickCheckUpdateBtn: document.getElementById("quickCheckUpdateBtn"),
   quickCopyContactBtn: document.getElementById("quickCopyContactBtn"),
   quickLangKoBtn: document.getElementById("quickLangKoBtn"),
@@ -436,6 +461,9 @@ const els = {
   fullscreenMiniBar: document.getElementById("fullscreenMiniBar"),
   toggleFullscreenViewModeBtn: document.getElementById("toggleFullscreenViewModeBtn"),
   toggleThumbInFullscreenBtn: document.getElementById("toggleThumbInFullscreenBtn"),
+  fsViewSingleBtn: document.getElementById("fsViewSingleBtn"),
+  fsViewSpreadBtn: document.getElementById("fsViewSpreadBtn"),
+  fsViewFocusBtn: document.getElementById("fsViewFocusBtn"),
   searchPanel: document.getElementById("searchPanel"),
   searchPanelCount: document.getElementById("searchPanelCount"),
   searchResultList: document.getElementById("searchResultList"),
@@ -758,6 +786,28 @@ function normalizeRibbonTab(tab) {
   return "home";
 }
 
+function normalizeViewMode(mode) {
+  const value = String(mode || "").toLowerCase();
+  if (value === "single" || value === "spread" || value === "focus") {
+    return value;
+  }
+  return "single";
+}
+
+function getEffectiveViewMode() {
+  const baseMode = normalizeViewMode(state.viewMode);
+  if (!state.isFullScreen) {
+    return baseMode;
+  }
+  if (state.fullScreenViewMode === "single") {
+    return "focus";
+  }
+  if (baseMode === "focus") {
+    return "single";
+  }
+  return baseMode;
+}
+
 function buildWindowTitle(filePath) {
   const name = fileNameFromPath(filePath);
   return name ? `lookup - ${name}` : "lookup";
@@ -878,6 +928,26 @@ function updateViewActionButtons() {
   const leftVisible = getEffectiveLeftPanelVisible();
   const rightVisible = getEffectiveRightPanelVisible();
   const darkEnabled = document.body.classList.contains("dark");
+  const effectiveViewMode = getEffectiveViewMode();
+
+  setIconButtonVisual(els.viewSingleBtn, "viewSingle", t("viewModeSingleTip"));
+  setIconButtonVisual(els.viewSpreadBtn, "viewSpread", t("viewModeSpreadTip"));
+  setIconButtonVisual(els.viewFocusBtn, "viewFocus", t("viewModeFocusTip"));
+  setIconButtonVisual(els.fsViewSingleBtn, "viewSingle", t("viewModeSingleTip"));
+  setIconButtonVisual(els.fsViewSpreadBtn, "viewSpread", t("viewModeSpreadTip"));
+  setIconButtonVisual(els.fsViewFocusBtn, "viewFocus", t("viewModeFocusTip"));
+  const viewButtons = [els.viewSingleBtn, els.fsViewSingleBtn];
+  for (const button of viewButtons) {
+    button?.classList.toggle("is-active", effectiveViewMode === "single");
+  }
+  const spreadButtons = [els.viewSpreadBtn, els.fsViewSpreadBtn];
+  for (const button of spreadButtons) {
+    button?.classList.toggle("is-active", effectiveViewMode === "spread");
+  }
+  const focusButtons = [els.viewFocusBtn, els.fsViewFocusBtn];
+  for (const button of focusButtons) {
+    button?.classList.toggle("is-active", effectiveViewMode === "focus");
+  }
 
   setIconButtonVisual(
     els.toggleThumbPanelBtn,
@@ -912,6 +982,7 @@ function persistLayoutState() {
   localStorage.setItem(storage.leftPanelWidth, String(Math.round(state.leftPanelWidth)));
   localStorage.setItem(storage.rightPanelWidth, String(Math.round(state.rightPanelWidth)));
   localStorage.setItem(storage.fullscreenMode, state.fullScreenViewMode);
+  localStorage.setItem(storage.viewMode, normalizeViewMode(state.viewMode));
 }
 
 function getEffectiveLeftPanelVisible() {
@@ -923,6 +994,13 @@ function getEffectiveRightPanelVisible() {
     return false;
   }
   return state.searchPanelVisible;
+}
+
+function applyPagesContainerMode() {
+  const mode = getEffectiveViewMode();
+  els.pagesContainer.classList.toggle("view-single", mode === "single");
+  els.pagesContainer.classList.toggle("view-spread", mode === "spread");
+  els.pagesContainer.classList.toggle("view-focus", mode === "focus");
 }
 
 function applyWorkspaceColumnSizes(leftVisible, rightVisible) {
@@ -944,8 +1022,9 @@ function applyPanelLayout() {
   applyWorkspaceColumnSizes(leftVisible, rightVisible);
   els.workspace.classList.toggle("left-collapsed", !leftVisible);
   els.workspace.classList.toggle("right-collapsed", !rightVisible);
+  applyPagesContainerMode();
   applyPageVisibility();
-  if (!isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() !== "focus") {
     for (const view of state.pageViews.values()) {
       view.wrap.classList.remove("hidden-page");
     }
@@ -1244,22 +1323,22 @@ function showUpdateNotesModal(version, releaseNotes) {
 function updateFullscreenButtons() {
   els.toggleFullscreenViewModeBtn.textContent =
     state.fullScreenViewMode === "single" ? t("fullscreenModeSingle") : t("fullscreenModeContinuous");
-  document.body.classList.toggle("fullscreen-single", isSinglePageFullscreen());
+  document.body.classList.toggle("fullscreen-single", getEffectiveViewMode() === "focus");
   updateViewActionButtons();
 }
 
 function applyPageVisibility() {
   ensureCurrentPageExists();
-  const singleMode = state.isFullScreen && state.fullScreenViewMode === "single";
+  const focusMode = getEffectiveViewMode() === "focus";
   let visibleCount = 0;
   for (const [pageNum, view] of state.pageViews.entries()) {
-    const hidden = singleMode && pageNum !== state.currentPage;
+    const hidden = focusMode && pageNum !== state.currentPage;
     view.wrap.classList.toggle("hidden-page", hidden);
     if (!hidden) {
       visibleCount += 1;
     }
   }
-  if (singleMode && visibleCount === 0 && state.pageOrder.length > 0) {
+  if (focusMode && visibleCount === 0 && state.pageOrder.length > 0) {
     state.currentPage = state.pageOrder[0];
     const fallbackView = state.pageViews.get(state.currentPage);
     if (fallbackView) {
@@ -1269,7 +1348,7 @@ function applyPageVisibility() {
 }
 
 function ensureCurrentPageVisibleInSingleMode() {
-  if (!isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() !== "focus") {
     return;
   }
   const currentView = state.pageViews.get(state.currentPage);
@@ -1793,7 +1872,10 @@ async function goToPage(pageNum, smooth = false) {
   if (!view) {
     return;
   }
-  if (!isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() === "focus") {
+    applyPageVisibility();
+    ensureCurrentPageVisibleInSingleMode();
+  } else {
     view.wrap.classList.remove("hidden-page");
   }
   const scrollTop = Math.max(0, view.wrap.offsetTop + view.wrap.offsetHeight / 2 - els.viewerPanel.clientHeight / 2);
@@ -1832,7 +1914,7 @@ function updateCurrentPageByScroll() {
   if (!state.pdfDoc) {
     return;
   }
-  if (isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() === "focus") {
     return;
   }
 
@@ -1879,7 +1961,7 @@ function ensureCurrentPageExists() {
 }
 
 function isSinglePageFullscreen() {
-  return state.isFullScreen && state.fullScreenViewMode === "single";
+  return state.isFullScreen && getEffectiveViewMode() === "focus";
 }
 
 function focusViewerPanel() {
@@ -1909,7 +1991,7 @@ async function waitForStableViewerSize(minWidth = 120, minHeight = 120, maxAttem
 }
 
 function clearHiddenPagesOutsideSingleFullscreen() {
-  if (isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() === "focus") {
     ensureCurrentPageVisibleInSingleMode();
     return;
   }
@@ -2021,7 +2103,7 @@ async function fitCurrentPageToViewport() {
   const maxHeight = Math.max(100, els.viewerPanel.clientHeight - 44);
   const fitWidthScale = maxWidth / Math.max(1, baseViewport.width);
   const fitHeightScale = maxHeight / Math.max(1, baseViewport.height);
-  const nextScale = state.fullScreenViewMode === "single" ? Math.min(fitWidthScale, fitHeightScale) : fitWidthScale;
+  const nextScale = getEffectiveViewMode() === "focus" ? Math.min(fitWidthScale, fitHeightScale) : fitWidthScale;
   if (!Number.isFinite(nextScale) || nextScale <= 0) {
     return false;
   }
@@ -2081,7 +2163,7 @@ function queueLayoutRecoveryRender(options = {}) {
       }
       applyPageVisibility();
       clearHiddenPagesOutsideSingleFullscreen();
-      if (!isSinglePageFullscreen()) {
+      if (getEffectiveViewMode() !== "focus") {
         for (const view of state.pageViews.values()) {
           view.wrap.classList.remove("hidden-page");
         }
@@ -2093,11 +2175,11 @@ function queueLayoutRecoveryRender(options = {}) {
       if (shouldApplyFullscreenFit(options)) {
         await fitCurrentPageToViewport();
         await goToPage(state.currentPage, false);
-      } else if (isSinglePageFullscreen()) {
+      } else if (getEffectiveViewMode() === "focus") {
         alignCurrentPageToViewerCenter();
       }
       await renderAllPages({ prioritizeVisible: true });
-      if (isSinglePageFullscreen()) {
+      if (getEffectiveViewMode() === "focus") {
         alignCurrentPageToViewerCenter();
       }
       await ensureViewerPageVisible();
@@ -3026,7 +3108,7 @@ function handleViewerWheel(event) {
     handleCtrlWheelZoom(event);
     return;
   }
-  if (!isSinglePageFullscreen()) {
+  if (getEffectiveViewMode() !== "focus") {
     return;
   }
   const delta = normalizeWheelDelta(event);
@@ -3102,6 +3184,31 @@ function toggleFullscreenViewMode() {
     return;
   }
   layoutRecover();
+}
+
+async function setViewMode(mode, options = {}) {
+  const normalized = normalizeViewMode(mode);
+  const prevMode = normalizeViewMode(state.viewMode);
+  if (normalized === prevMode && !options.force) {
+    return;
+  }
+  state.viewMode = normalized;
+  localStorage.setItem(storage.viewMode, state.viewMode);
+  if (state.isFullScreen) {
+    state.fullScreenViewMode = normalized === "focus" ? "single" : "continuous";
+    localStorage.setItem(storage.fullscreenMode, state.fullScreenViewMode);
+    if (state.zoomMode !== "manual") {
+      setZoomMode("fit");
+      state.fullScreenAutoFitDone = false;
+    }
+  }
+  applyPanelLayout();
+  applyPageVisibility();
+  updateFullscreenButtons();
+  persistLayoutState();
+  layoutRecover({
+    forceFit: state.isFullScreen && state.zoomMode !== "manual"
+  });
 }
 
 async function buildEditedPdfBytes() {
@@ -3640,6 +3747,24 @@ function bindToolbarActions() {
   els.toggleFullscreenViewModeBtn.addEventListener("click", () => {
     toggleFullscreenViewMode();
   });
+  els.viewSingleBtn?.addEventListener("click", () => {
+    setViewMode("single").catch(() => {});
+  });
+  els.viewSpreadBtn?.addEventListener("click", () => {
+    setViewMode("spread").catch(() => {});
+  });
+  els.viewFocusBtn?.addEventListener("click", () => {
+    setViewMode("focus").catch(() => {});
+  });
+  els.fsViewSingleBtn?.addEventListener("click", () => {
+    setViewMode("single").catch(() => {});
+  });
+  els.fsViewSpreadBtn?.addEventListener("click", () => {
+    setViewMode("spread").catch(() => {});
+  });
+  els.fsViewFocusBtn?.addEventListener("click", () => {
+    setViewMode("focus").catch(() => {});
+  });
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
     toggleLeftPanelVisibility();
   });
@@ -3783,7 +3908,7 @@ function bindWindowActions() {
       return;
     }
     if (
-      isSinglePageFullscreen() &&
+      getEffectiveViewMode() === "focus" &&
       ["ArrowUp", "ArrowLeft", "PageUp"].includes(event.key) &&
       !event.ctrlKey &&
       !event.metaKey &&
@@ -3795,7 +3920,7 @@ function bindWindowActions() {
       return;
     }
     if (
-      isSinglePageFullscreen() &&
+      getEffectiveViewMode() === "focus" &&
       ["ArrowDown", "ArrowRight", "PageDown"].includes(event.key) &&
       !event.ctrlKey &&
       !event.metaKey &&
@@ -3891,6 +4016,7 @@ function bindMainProcessEvents() {
     document.body.classList.toggle("fullscreen", isFullScreen);
 
     if (isFullScreen) {
+      state.fullScreenViewMode = normalizeViewMode(state.viewMode) === "focus" ? "single" : "continuous";
       state.fullscreenThumbVisible = false;
       state.fullScreenAutoFitDone = false;
       setZoomMode("fit");
@@ -4008,6 +4134,7 @@ async function init() {
   state.isFullScreen = isFullScreen;
   document.body.classList.toggle("fullscreen", isFullScreen);
   if (isFullScreen) {
+    state.fullScreenViewMode = normalizeViewMode(state.viewMode) === "focus" ? "single" : "continuous";
     state.fullscreenThumbVisible = false;
     state.fullScreenAutoFitDone = false;
     setZoomMode("fit");
