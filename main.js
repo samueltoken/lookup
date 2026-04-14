@@ -5,11 +5,6 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
-const { parseOffice } = require("officeparser");
-const WordExtractor = require("word-extractor");
-const XLSX = require("xlsx");
-const hwpjs = require("@ohah/hwpjs");
-const { read: readHwpxDocument } = require("hwpx-js");
 
 let mainWindow = null;
 let pendingDocumentToOpen = null;
@@ -17,7 +12,15 @@ let updateConfig = null;
 let updateDownloaded = false;
 let updateTargetVersion = "";
 let updateInstallTriggered = false;
+let updateBusy = false;
 let appSettings = { language: "ko" };
+let pendingInstalledVersion = "";
+
+let officeParserFn = null;
+let WordExtractorCtor = null;
+let XLSXMod = null;
+let hwpJsMod = null;
+let readHwpxDocumentFn = null;
 
 const menuText = {
   ko: {
@@ -133,6 +136,41 @@ function sendDocumentToRenderer(filePath) {
   sendToRenderer("system-open-file", filePath);
 }
 
+function ensureOfficeParser() {
+  if (!officeParserFn) {
+    ({ parseOffice: officeParserFn } = require("officeparser"));
+  }
+  return officeParserFn;
+}
+
+function ensureWordExtractorCtor() {
+  if (!WordExtractorCtor) {
+    WordExtractorCtor = require("word-extractor");
+  }
+  return WordExtractorCtor;
+}
+
+function ensureXlsxModule() {
+  if (!XLSXMod) {
+    XLSXMod = require("xlsx");
+  }
+  return XLSXMod;
+}
+
+function ensureHwpJsModule() {
+  if (!hwpJsMod) {
+    hwpJsMod = require("@ohah/hwpjs");
+  }
+  return hwpJsMod;
+}
+
+function ensureHwpxReader() {
+  if (!readHwpxDocumentFn) {
+    ({ read: readHwpxDocumentFn } = require("hwpx-js"));
+  }
+  return readHwpxDocumentFn;
+}
+
 function toBuffer(data) {
   if (Buffer.isBuffer(data)) {
     return data;
@@ -219,6 +257,48 @@ function ensurePrintPreviewDir() {
   return dir;
 }
 
+function getUpdateMarkerFilePath() {
+  return path.join(app.getPath("userData"), "last-installed-update.json");
+}
+
+function markInstalledVersion(version) {
+  try {
+    const marker = {
+      version: String(version || "").trim(),
+      time: new Date().toISOString()
+    };
+    fs.mkdirSync(path.dirname(getUpdateMarkerFilePath()), { recursive: true });
+    fs.writeFileSync(getUpdateMarkerFilePath(), JSON.stringify(marker, null, 2), "utf8");
+  } catch (_error) {
+    // ignore marker write errors
+  }
+}
+
+function consumeInstalledVersionMarker() {
+  try {
+    const markerPath = getUpdateMarkerFilePath();
+    if (!fs.existsSync(markerPath)) {
+      return "";
+    }
+    const parsed = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    fs.unlinkSync(markerPath);
+    return String(parsed?.version || "").trim();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function setUpdateBusy(nextBusy) {
+  const boolValue = Boolean(nextBusy);
+  if (updateBusy === boolValue) {
+    return;
+  }
+  updateBusy = boolValue;
+  if (app.isReady()) {
+    createMenu();
+  }
+}
+
 function createConvertedPdfPath(sourcePath) {
   const resolved = path.resolve(sourcePath);
   const stat = fs.statSync(resolved);
@@ -227,6 +307,24 @@ function createConvertedPdfPath(sourcePath) {
   const signature = `${resolved}|${stat.mtimeMs}|${stat.size}`;
   const digest = crypto.createHash("sha1").update(signature).digest("hex").slice(0, 12);
   return path.join(ensureConvertedDir(), `${baseName}-${ext}-${digest}.pdf`);
+}
+
+function classifyDocumentOpenError(error) {
+  const message = String(error?.message || "");
+  const code = String(error?.code || "");
+  if (code === "ENOENT" || /존재하지 않습니다|no such file/i.test(message)) {
+    return "NOT_FOUND";
+  }
+  if (code === "EACCES" || code === "EPERM" || /권한|permission/i.test(message)) {
+    return "NO_PERMISSION";
+  }
+  if (/지원하지 않는 파일 형식|unsupported/i.test(message)) {
+    return "UNSUPPORTED_FORMAT";
+  }
+  if (/변환|convert|hwp|office/i.test(message)) {
+    return "CONVERT_FAILED";
+  }
+  return "OPEN_FAILED";
 }
 
 function runPowerShell(script, timeoutMs = 180000) {
@@ -322,13 +420,15 @@ function convertWithHancomCom(sourcePath, outputPdfPath) {
 }
 
 async function extractWordLegacyText(filePath) {
-  const extractor = new WordExtractor();
+  const Ctor = ensureWordExtractorCtor();
+  const extractor = new Ctor();
   const document = await extractor.extract(filePath);
   return normalizeText(document?.getBody?.() || "");
 }
 
 async function extractOfficeAstText(filePath) {
   try {
+    const parseOffice = ensureOfficeParser();
     const ast = await parseOffice(filePath, { outputErrorToConsole: false });
     if (!ast) {
       return "";
@@ -346,6 +446,7 @@ async function extractOfficeAstText(filePath) {
 }
 
 function extractSpreadsheetText(filePath) {
+  const XLSX = ensureXlsxModule();
   const workbook = XLSX.readFile(filePath, { cellDates: false, dense: true });
   const sections = [];
   for (const sheetName of workbook.SheetNames) {
@@ -409,6 +510,7 @@ function extractHwpxRunsText(runs) {
 
 function extractHwpFamilyText(filePath) {
   try {
+    const readHwpxDocument = ensureHwpxReader();
     const raw = fs.readFileSync(filePath);
     const document = readHwpxDocument(new Uint8Array(raw));
     const blocks = [];
@@ -430,6 +532,7 @@ function extractHwpFamilyText(filePath) {
 
 function extractHwpLegacyText(filePath) {
   try {
+    const hwpjs = ensureHwpJsModule();
     const raw = fs.readFileSync(filePath);
     const markdownResult = hwpjs.toMarkdown(raw);
     if (typeof markdownResult === "string") {
@@ -467,6 +570,7 @@ ${raw}
 
 async function convertHwpToPdfWithHwpJs(sourcePath, outputPdfPath) {
   try {
+    const hwpjs = ensureHwpJsModule();
     const raw = fs.readFileSync(sourcePath);
     const htmlRaw = hwpjs.toHtml(raw);
     const html = normalizeHwpHtmlDocument(htmlRaw, path.basename(sourcePath));
@@ -808,6 +912,7 @@ function createMenu() {
         { type: "separator" },
         {
           label: mt("updateCheck"),
+          enabled: !updateBusy,
           click: () => sendToRenderer("menu-action", "check-update")
         },
         {
@@ -853,6 +958,14 @@ function createWindow() {
       pendingDocumentToOpen = null;
     }
     sendToRenderer("window-fullscreen-changed", mainWindow?.isFullScreen() ?? false);
+    if (pendingInstalledVersion) {
+      sendUpdateStatus("installed", {
+        stage: "installed",
+        targetVersion: pendingInstalledVersion,
+        message: `업데이트 설치 완료: v${pendingInstalledVersion}`
+      });
+      pendingInstalledVersion = "";
+    }
   });
 
   mainWindow.on("enter-full-screen", () => {
@@ -940,6 +1053,7 @@ function sendUpdateStatus(status, extra = {}) {
 function setupAutoUpdater() {
   updateConfig = loadUpdateConfig();
   if (!updateConfig) {
+    setUpdateBusy(false);
     sendUpdateStatus("disabled", {
       stage: "disabled",
       message: "업데이트 설정이 없습니다. update-config.json에 owner/repo를 입력해 주세요."
@@ -950,6 +1064,7 @@ function setupAutoUpdater() {
   updateDownloaded = false;
   updateTargetVersion = "";
   updateInstallTriggered = false;
+  setUpdateBusy(false);
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.autoRunAppAfterInstall = true;
@@ -964,11 +1079,13 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("checking-for-update", () => {
-    sendUpdateStatus("checking", { stage: "checking", message: "업데이트 확인중..." });
+    setUpdateBusy(true);
+    sendUpdateStatus("checking", { stage: "checking", percent: 0, message: "업데이트 확인중..." });
   });
 
   autoUpdater.on("update-available", (info) => {
     updateTargetVersion = String(info?.version || "");
+    setUpdateBusy(true);
     sendUpdateStatus("available", {
       stage: "downloading",
       targetVersion: updateTargetVersion,
@@ -979,11 +1096,13 @@ function setupAutoUpdater() {
 
   autoUpdater.on("update-not-available", () => {
     updateTargetVersion = "";
+    setUpdateBusy(false);
     sendUpdateStatus("not-available", { stage: "idle", percent: 100, message: "현재 최신 버전입니다." });
   });
 
   autoUpdater.on("download-progress", (progress) => {
     const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
+    setUpdateBusy(true);
     sendUpdateStatus("downloading", {
       stage: "downloading",
       targetVersion: updateTargetVersion,
@@ -996,6 +1115,7 @@ function setupAutoUpdater() {
     updateDownloaded = true;
     updateInstallTriggered = false;
     updateTargetVersion = String(info?.version || updateTargetVersion || "");
+    setUpdateBusy(true);
     sendUpdateStatus("downloaded", {
       stage: "ready-to-install",
       targetVersion: updateTargetVersion,
@@ -1009,34 +1129,38 @@ function setupAutoUpdater() {
           return;
         }
         try {
+          updateInstallTriggered = true;
+          markInstalledVersion(updateTargetVersion || app.getVersion());
           sendUpdateStatus("installing", {
-            stage: "installing",
+            stage: "restarting",
             targetVersion: updateTargetVersion,
             percent: 100,
-            message: "앱을 다시 시작해 업데이트를 설치합니다..."
+            message: "업데이트 설치를 위해 즉시 재시작합니다..."
           });
-          autoUpdater.quitAndInstall(false, true);
-          updateInstallTriggered = true;
+          setUpdateBusy(true);
+          autoUpdater.quitAndInstall(true, true);
         } catch (error) {
           updateInstallTriggered = false;
+          setUpdateBusy(false);
           sendUpdateStatus("error", {
             stage: "error",
             message: `업데이트 재시작 설치 실패: ${error?.message || "알 수 없는 오류"}`
           });
         }
       };
-      setTimeout(triggerInstall, 1200);
+      setTimeout(triggerInstall, 280);
       setTimeout(() => {
         if (!updateInstallTriggered) {
           triggerInstall();
         }
-      }, 4200);
+      }, 2200);
     }
   });
 
   autoUpdater.on("before-quit-for-update", () => {
+    setUpdateBusy(true);
     sendUpdateStatus("installing", {
-      stage: "installing",
+      stage: "restarting",
       targetVersion: updateTargetVersion,
       percent: 100,
       message: "업데이트 설치를 위해 앱을 종료합니다..."
@@ -1044,6 +1168,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("error", (error) => {
+    setUpdateBusy(false);
     sendUpdateStatus("error", {
       stage: "error",
       message: `업데이트 오류: ${error?.message || "알 수 없는 오류"}`
@@ -1108,34 +1233,54 @@ ipcMain.handle("pdf:read-file", async (_event, filePath) => {
   if (typeof filePath !== "string") {
     throw new Error("파일 경로가 올바르지 않습니다.");
   }
-
-  const converted = await convertDocumentToPdf(filePath);
-  return converted.pdfBuffer;
+  const resolved = path.resolve(filePath);
+  if (getFileExtension(resolved) !== ".pdf") {
+    throw new Error("PDF 파일만 직접 읽을 수 있습니다.");
+  }
+  return await fsp.readFile(resolved);
 });
 
 ipcMain.handle("document:open", async (_event, filePath) => {
-  const converted = await convertDocumentToPdf(filePath);
-  return {
-    sourcePath: converted.sourcePath,
-    sourceExt: converted.sourceExt,
-    converted: converted.converted,
-    convertMode: converted.convertMode,
-    warningMessage: converted.warningMessage,
-    pdfPath: converted.pdfPath,
-    data: converted.pdfBuffer
-  };
+  try {
+    const converted = await convertDocumentToPdf(filePath);
+    return {
+      ok: true,
+      sourcePath: converted.sourcePath,
+      sourceExt: converted.sourceExt,
+      converted: converted.converted,
+      convertMode: converted.convertMode,
+      warningMessage: converted.warningMessage,
+      pdfPath: converted.pdfPath,
+      data: converted.pdfBuffer
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: classifyDocumentOpenError(error),
+      message: String(error?.message || "문서를 열지 못했습니다.")
+    };
+  }
 });
 
 ipcMain.handle("document:convert", async (_event, filePath) => {
-  const converted = await convertDocumentToPdf(filePath);
-  return {
-    sourcePath: converted.sourcePath,
-    sourceExt: converted.sourceExt,
-    converted: converted.converted,
-    convertMode: converted.convertMode,
-    warningMessage: converted.warningMessage,
-    pdfPath: converted.pdfPath
-  };
+  try {
+    const converted = await convertDocumentToPdf(filePath);
+    return {
+      ok: true,
+      sourcePath: converted.sourcePath,
+      sourceExt: converted.sourceExt,
+      converted: converted.converted,
+      convertMode: converted.convertMode,
+      warningMessage: converted.warningMessage,
+      pdfPath: converted.pdfPath
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: classifyDocumentOpenError(error),
+      message: String(error?.message || "문서를 변환하지 못했습니다.")
+    };
+  }
 });
 
 ipcMain.handle("document:is-supported", async (_event, filePath) => {
@@ -1223,10 +1368,15 @@ ipcMain.handle("update:check", async () => {
   if (!updateConfig) {
     return { ok: false, message: "업데이트 설정이 없습니다." };
   }
+  if (updateBusy) {
+    return { ok: false, message: "업데이트가 이미 진행 중입니다.", code: "UPDATE_BUSY" };
+  }
   try {
+    setUpdateBusy(true);
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (error) {
+    setUpdateBusy(false);
     return { ok: false, message: error?.message || "업데이트 확인 실패" };
   }
 });
@@ -1234,6 +1384,7 @@ ipcMain.handle("update:check", async () => {
 ipcMain.handle("update:get-config", async () => {
   return {
     enabled: Boolean(updateConfig),
+    busy: updateBusy,
     owner: updateConfig?.owner || "",
     repo: updateConfig?.repo || "",
     currentVersion: app.getVersion(),
@@ -1246,17 +1397,10 @@ ipcMain.handle("app:get-version", async () => app.getVersion());
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
     loadSettings();
+    pendingInstalledVersion = consumeInstalledVersionMarker();
     createMenu();
     createWindow();
     setupAutoUpdater();
-
-    if (updateConfig && app.isPackaged) {
-      setTimeout(() => {
-        autoUpdater.checkForUpdates().catch(() => {
-          // status events already show the error
-        });
-      }, 6000);
-    }
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

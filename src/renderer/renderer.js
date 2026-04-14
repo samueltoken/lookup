@@ -1,12 +1,25 @@
 ﻿
 import * as pdfjsLib from "../../node_modules/pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument, StandardFonts, degrees, rgb } from "../../node_modules/pdf-lib/dist/pdf-lib.esm.js";
-import { createWorker } from "../../node_modules/tesseract.js/dist/tesseract.esm.min.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "../../node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
   import.meta.url
 ).toString();
+
+let tesseractCreateWorker = null;
+
+async function ensureTesseractCreateWorker() {
+  if (typeof tesseractCreateWorker === "function") {
+    return tesseractCreateWorker;
+  }
+  const module = await import("../../node_modules/tesseract.js/dist/tesseract.esm.min.js");
+  if (typeof module?.createWorker !== "function") {
+    throw new Error("OCR 모듈을 불러오지 못했습니다.");
+  }
+  tesseractCreateWorker = module.createWorker;
+  return tesseractCreateWorker;
+}
 
 const storage = {
   darkMode: "lookup-dark-mode",
@@ -91,7 +104,21 @@ const i18n = {
     textMemoCancel: "취소",
     textMemoAdded: "텍스트 메모를 추가했습니다.",
     undoDone: "되돌리기 완료",
-    redoDone: "다시하기 완료"
+    redoDone: "다시하기 완료",
+    updateStageIdle: "업데이트 대기",
+    updateStageChecking: "업데이트 확인중",
+    updateStageDownloading: "다운로드중",
+    updateStageReady: "설치 준비",
+    updateStageRestarting: "재시작 중",
+    updateStageInstalled: "업데이트 완료",
+    updateStageError: "업데이트 오류",
+    updateBusyMessage: "업데이트가 이미 진행 중입니다.",
+    openErrorNotFound: "파일을 찾을 수 없습니다. 경로를 확인해 주세요.",
+    openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
+    openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
+    openErrorConvert: "문서 변환에 실패했습니다. 파일을 다시 확인해 주세요.",
+    openErrorGeneric: "문서를 열지 못했습니다.",
+    openErrorPdfFallback: "일반 열기에 실패해 PDF 직접 열기로 복구했습니다."
   },
   en: {
     open: "Open",
@@ -149,7 +176,21 @@ const i18n = {
     textMemoCancel: "Cancel",
     textMemoAdded: "Text memo added.",
     undoDone: "Undo complete",
-    redoDone: "Redo complete"
+    redoDone: "Redo complete",
+    updateStageIdle: "Idle",
+    updateStageChecking: "Checking for updates",
+    updateStageDownloading: "Downloading update",
+    updateStageReady: "Preparing install",
+    updateStageRestarting: "Restarting",
+    updateStageInstalled: "Update complete",
+    updateStageError: "Update error",
+    updateBusyMessage: "An update is already in progress.",
+    openErrorNotFound: "File not found. Please check the path.",
+    openErrorPermission: "No permission to open this file.",
+    openErrorUnsupported: "Unsupported file format.",
+    openErrorConvert: "Failed to convert this document.",
+    openErrorGeneric: "Unable to open this document.",
+    openErrorPdfFallback: "Standard open failed. Recovered using direct PDF read."
   }
 };
 
@@ -214,6 +255,9 @@ const state = {
   layoutRecoveryTimer: 0,
   appVersion: "",
   updateTargetVersion: "",
+  updateBusy: false,
+  updateStage: "idle",
+  updateBannerHideTimer: 0,
   language: localStorage.getItem(storage.language) === "en" ? "en" : "ko",
   applyingLanguage: false,
   pendingZoomJob: null,
@@ -269,6 +313,10 @@ const els = {
   searchPanel: document.getElementById("searchPanel"),
   searchPanelCount: document.getElementById("searchPanelCount"),
   searchResultList: document.getElementById("searchResultList"),
+  updateBanner: document.getElementById("updateBanner"),
+  updateStageText: document.getElementById("updateStageText"),
+  updateBannerPercentText: document.getElementById("updateBannerPercentText"),
+  updateBannerBar: document.getElementById("updateBannerBar"),
   statusBar: document.getElementById("statusBar"),
   statusText: document.getElementById("statusText"),
   currentVersionLabel: document.getElementById("currentVersionLabel"),
@@ -451,6 +499,7 @@ function applyLanguageToStaticTexts() {
     }
     updateSearchCountText();
     updateVersionLabels();
+    els.updateStageText.textContent = updateStageLabel(state.updateStage);
     applyPanelLayout();
     updateFullscreenButtons();
     updateToolbarState();
@@ -513,6 +562,30 @@ function fileNameFromPath(filePath) {
     return "";
   }
   return filePath.replaceAll("\\", "/").split("/").pop() || filePath;
+}
+
+function getFileExt(filePath) {
+  const normalized = String(filePath || "").trim().toLowerCase();
+  const index = normalized.lastIndexOf(".");
+  if (index < 0) {
+    return "";
+  }
+  return normalized.slice(index);
+}
+
+function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
+  switch (String(errorCode || "").toUpperCase()) {
+    case "NOT_FOUND":
+      return t("openErrorNotFound");
+    case "NO_PERMISSION":
+      return t("openErrorPermission");
+    case "UNSUPPORTED_FORMAT":
+      return t("openErrorUnsupported");
+    case "CONVERT_FAILED":
+      return t("openErrorConvert");
+    default:
+      return fallbackMessage || t("openErrorGeneric");
+  }
 }
 
 function buildWindowTitle(filePath) {
@@ -619,6 +692,59 @@ function applyPanelLayout() {
   els.toggleThumbInFullscreenBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
 }
 
+function normalizeUpdateStage(stage) {
+  switch (String(stage || "").toLowerCase()) {
+    case "checking":
+      return "checking";
+    case "available":
+    case "downloading":
+      return "downloading";
+    case "ready-to-install":
+    case "downloaded":
+      return "ready";
+    case "installing":
+    case "restarting":
+      return "restarting";
+    case "installed":
+      return "installed";
+    case "error":
+      return "error";
+    case "disabled":
+      return "disabled";
+    case "idle":
+    case "not-available":
+    default:
+      return "idle";
+  }
+}
+
+function updateStageLabel(stage) {
+  switch (normalizeUpdateStage(stage)) {
+    case "checking":
+      return t("updateStageChecking");
+    case "downloading":
+      return t("updateStageDownloading");
+    case "ready":
+      return t("updateStageReady");
+    case "restarting":
+      return t("updateStageRestarting");
+    case "installed":
+      return t("updateStageInstalled");
+    case "error":
+      return t("updateStageError");
+    default:
+      return t("updateStageIdle");
+  }
+}
+
+function showUpdateBanner(show) {
+  if (state.updateBannerHideTimer) {
+    clearTimeout(state.updateBannerHideTimer);
+    state.updateBannerHideTimer = 0;
+  }
+  els.updateBanner.classList.toggle("hidden", !show);
+}
+
 function showUpdateProgressBar(show) {
   els.updateProgressWrap.classList.toggle("hidden", !show);
 }
@@ -627,6 +753,37 @@ function setUpdateProgress(percent) {
   const safe = clamp(Math.round(percent), 0, 100);
   els.updateProgressBar.style.width = `${safe}%`;
   els.updateProgressText.textContent = `${safe}%`;
+  els.updateBannerBar.style.width = `${safe}%`;
+  els.updateBannerPercentText.textContent = `${safe}%`;
+}
+
+function applyUpdateVisualState(status, stage, percent) {
+  const normalized = normalizeUpdateStage(stage || status);
+  state.updateStage = normalized;
+  els.updateStageText.textContent = updateStageLabel(normalized);
+  if (typeof percent === "number") {
+    setUpdateProgress(percent);
+  } else if (normalized === "restarting" || normalized === "ready" || normalized === "installed") {
+    setUpdateProgress(100);
+  }
+
+  const shouldShow = ["checking", "downloading", "ready", "restarting", "installed", "error"].includes(normalized);
+  showUpdateProgressBar(shouldShow);
+  showUpdateBanner(shouldShow);
+
+  if (normalized === "installed") {
+    state.updateBannerHideTimer = setTimeout(() => {
+      state.updateBannerHideTimer = 0;
+      showUpdateBanner(false);
+      showUpdateProgressBar(false);
+    }, 3600);
+  } else if (normalized === "error") {
+    state.updateBannerHideTimer = setTimeout(() => {
+      state.updateBannerHideTimer = 0;
+      showUpdateBanner(false);
+      showUpdateProgressBar(false);
+    }, 4200);
+  }
 }
 
 function updateVersionLabels(currentVersion = state.appVersion, targetVersion = state.updateTargetVersion) {
@@ -1636,6 +1793,7 @@ async function ensureOcrWorker() {
     return state.ocrWorkerPromise;
   }
   state.ocrWorkerPromise = (async () => {
+    const createWorker = await ensureTesseractCreateWorker();
     try {
       const worker = await createWorker("kor+eng");
       state.ocrWorker = worker;
@@ -1730,7 +1888,7 @@ function shouldUseOcrFallback(textItems) {
     return true;
   }
   const charCount = textItems.reduce((sum, item) => sum + Number(item.searchableLength || 0), 0);
-  return charCount < 8;
+  return charCount <= 1;
 }
 
 function buildSearchPreview(items, hitItemIndexes) {
@@ -2307,9 +2465,17 @@ async function openPrintPreview() {
 }
 
 async function checkForUpdatesFromUI() {
+  if (state.updateBusy) {
+    setStatus(t("updateBusyMessage"), true);
+    return false;
+  }
+  state.updateBusy = true;
+  applyUpdateVisualState("checking", "checking", 0);
   setStatus(t("updateChecking"));
   const result = await window.lookupAPI.checkForUpdates();
   if (!result.ok) {
+    state.updateBusy = false;
+    applyUpdateVisualState("error", "error", state.updateStage === "downloading" ? undefined : 0);
     setStatus(
       state.language === "en" ? `Update check failed: ${result.message}` : `업데이트 확인 실패: ${result.message}`,
       true
@@ -2368,23 +2534,49 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
 
 async function loadDocumentFromPath(filePath) {
   if (!filePath || typeof filePath !== "string") {
-    return;
+    return false;
   }
 
+  const resolvedPath = filePath.trim();
+  const ext = getFileExt(resolvedPath);
+  setStatus(state.language === "en" ? "Opening document..." : "문서를 열고 있습니다...");
+
   try {
-    setStatus(state.language === "en" ? "Opening document..." : "문서를 열고 있습니다...");
-    const payload = await window.lookupAPI.openDocument(filePath);
-    if (!payload || !payload.data) {
-      throw new Error(state.language === "en" ? "Unable to open the document." : "문서를 열지 못했습니다.");
+    const payload = await window.lookupAPI.openDocument(resolvedPath);
+    if (payload?.ok === true && payload.data) {
+      await loadPdfFromBytes(payload.data, payload.sourcePath || resolvedPath, payload);
+      return true;
     }
-    await loadPdfFromBytes(payload.data, payload.sourcePath || filePath, payload);
+    if (payload && payload.data && payload.ok !== false) {
+      await loadPdfFromBytes(payload.data, payload.sourcePath || resolvedPath, payload);
+      return true;
+    }
+
+    if (ext === ".pdf") {
+      const directBytes = await window.lookupAPI.readPdfFile(resolvedPath);
+      await loadPdfFromBytes(directBytes, resolvedPath, {
+        sourcePath: resolvedPath,
+        sourceExt: ".pdf",
+        converted: false,
+        convertMode: "native"
+      });
+      setStatus(t("openErrorPdfFallback"));
+      return true;
+    }
+
+    throw new Error(mapOpenErrorMessage(payload?.errorCode, payload?.message));
   } catch (error) {
+    const fallbackMessage = mapOpenErrorMessage("", error?.message || "");
     setStatus(
       state.language === "en"
-        ? `Failed to open file: ${error?.message || "Unknown error"}`
-        : `파일 열기 실패: ${error?.message || "알 수 없는 오류"}`,
+        ? `Failed to open file: ${fallbackMessage}`
+        : `파일 열기 실패: ${fallbackMessage}`,
       true
     );
+    if (!state.pdfDoc) {
+      els.emptyHint.classList.remove("hidden");
+    }
+    return false;
   }
 }
 
@@ -2394,6 +2586,50 @@ async function openFileDialog() {
     return;
   }
   await loadDocumentFromPath(selectedPath);
+}
+
+function fileUriToPath(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const line = raw.split(/\r?\n/).find((entry) => entry && !entry.startsWith("#")) || "";
+  if (!line) {
+    return "";
+  }
+  if (/^[a-zA-Z]:\\/.test(line) || /^[a-zA-Z]:\//.test(line)) {
+    return line.replaceAll("/", "\\");
+  }
+  if (!line.toLowerCase().startsWith("file://")) {
+    return "";
+  }
+  let decoded = decodeURIComponent(line.replace(/^file:\/\/+/i, ""));
+  decoded = decoded.replace(/\//g, "\\");
+  if (/^[a-zA-Z]:\\/.test(decoded)) {
+    return decoded;
+  }
+  if (/^\\{2}/.test(decoded)) {
+    return decoded;
+  }
+  if (/^\\[a-zA-Z]:\\/.test(decoded)) {
+    return decoded.slice(1);
+  }
+  return decoded;
+}
+
+function extractDropFilePath(event) {
+  const list = Array.from(event.dataTransfer?.files || []);
+  const direct = list.find((file) => typeof file?.path === "string" && file.path.trim().length > 0);
+  if (direct?.path) {
+    return direct.path;
+  }
+  const uriList = event.dataTransfer?.getData("text/uri-list");
+  const fromUri = fileUriToPath(uriList);
+  if (fromUri) {
+    return fromUri;
+  }
+  const text = event.dataTransfer?.getData("text/plain");
+  return fileUriToPath(text);
 }
 
 function toggleLeftPanelVisibility() {
@@ -2625,11 +2861,12 @@ function bindWindowActions() {
   els.viewerPanel.addEventListener("drop", async (event) => {
     event.preventDefault();
     els.viewerPanel.classList.remove("drag-over");
-    const file = event.dataTransfer?.files?.[0];
-    if (!file?.path) {
+    const droppedPath = extractDropFilePath(event);
+    if (!droppedPath) {
+      setStatus(state.language === "en" ? "Failed to read dropped file path." : "드롭한 파일 경로를 읽지 못했습니다.", true);
       return;
     }
-    await loadDocumentFromPath(file.path);
+    await loadDocumentFromPath(droppedPath);
   });
 
   window.addEventListener("keydown", async (event) => {
@@ -2827,24 +3064,21 @@ function bindMainProcessEvents() {
       state.updateTargetVersion = payload.targetVersion;
     }
 
-    if (payload.status === "downloading" || payload.status === "available" || payload.status === "checking") {
-      showUpdateProgressBar(true);
-    }
-    if (typeof payload.percent === "number") {
-      setUpdateProgress(payload.percent);
-    }
-    if (payload.status === "not-available") {
-      setUpdateProgress(100);
-      showUpdateProgressBar(false);
+    const normalizedStage = normalizeUpdateStage(payload.stage || payload.status);
+    const busyStages = new Set(["checking", "downloading", "ready", "restarting"]);
+    state.updateBusy = busyStages.has(normalizedStage);
+
+    if (normalizedStage === "idle") {
       state.updateTargetVersion = "";
     }
-    if (payload.status === "downloaded" || payload.status === "installing") {
-      setUpdateProgress(100);
-      showUpdateProgressBar(true);
+
+    let percent = typeof payload.percent === "number" ? payload.percent : undefined;
+    if (percent === undefined && ["ready", "restarting", "installed"].includes(normalizedStage)) {
+      percent = 100;
+    } else if (percent === undefined && normalizedStage === "checking") {
+      percent = 0;
     }
-    if (payload.status === "error" || payload.status === "disabled") {
-      showUpdateProgressBar(false);
-    }
+    applyUpdateVisualState(payload.status, payload.stage, percent);
     updateVersionLabels();
     if (payload.message) {
       setStatus(payload.message, payload.status === "error");
@@ -2862,10 +3096,20 @@ async function initializeUpdateStatus() {
   if (config?.targetVersion) {
     state.updateTargetVersion = config.targetVersion;
   }
+  state.updateBusy = Boolean(config?.busy);
   updateVersionLabels();
   if (!config.enabled) {
+    state.updateBusy = false;
+    applyUpdateVisualState("disabled", "disabled", 0);
     setStatus(t("updateDisabled"));
   } else {
+    if (state.updateBusy) {
+      applyUpdateVisualState("checking", "checking", 0);
+    } else {
+      applyUpdateVisualState("idle", "idle", 0);
+      showUpdateProgressBar(false);
+      showUpdateBanner(false);
+    }
     setStatus(`${t("updateReady")}: ${config.owner}/${config.repo}`);
   }
 }
@@ -2908,9 +3152,13 @@ async function init() {
   persistLayoutState();
   focusViewerPanel();
   showUpdateProgressBar(false);
+  showUpdateBanner(false);
   setUpdateProgress(0);
+  els.updateStageText.textContent = updateStageLabel("idle");
   await syncWindowTitle("");
-  await initializeUpdateStatus();
+  initializeUpdateStatus().catch((error) => {
+    setStatus(error?.message || "업데이트 초기화 오류", true);
+  });
 }
 
 init().catch((error) => {
