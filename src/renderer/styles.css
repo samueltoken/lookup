@@ -282,6 +282,37 @@ body {
   gap: 18px;
 }
 
+.text-memo-editor {
+  position: absolute;
+  z-index: 45;
+  min-width: 220px;
+  max-width: 360px;
+  border: 1px solid #d5dde9;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(20, 27, 39, 0.2);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-memo-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: #fff;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.text-memo-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .page-wrap {
   position: relative;
   border-radius: 6px;
@@ -452,6 +483,17 @@ body.fullscreen #rightResizer {
   display: none !important;
 }
 
+body.fullscreen.fullscreen-single .viewer-panel {
+  overflow: auto;
+}
+
+body.fullscreen.fullscreen-single .pages-container {
+  min-height: 100%;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
 body.dark {
   --bg: #151b27;
   --toolbar: #1c2432;
@@ -465,7 +507,9 @@ body.dark .action,
 body.dark .page-input,
 body.dark .search-input,
 body.dark .thumb-item,
-body.dark .search-result-item {
+body.dark .search-result-item,
+body.dark .text-memo-input,
+body.dark .text-memo-editor {
   background: #243246;
   color: #dde6ef;
   border-color: #4a5c74;
