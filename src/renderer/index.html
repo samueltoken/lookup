@@ -12,7 +12,6 @@
         <div class="ribbon-tabs" role="tablist" aria-label="리본 탭">
           <button id="tabHomeBtn" class="ribbon-tab active" data-ribbon-tab="home" data-i18n="ribbonHome">홈</button>
           <button id="tabViewBtn" class="ribbon-tab" data-ribbon-tab="view" data-i18n="ribbonView">보기</button>
-          <button id="tabAnnotateBtn" class="ribbon-tab" data-ribbon-tab="annotate" data-i18n="ribbonAnnotate">주석</button>
           <button id="tabToolsBtn" class="ribbon-tab" data-ribbon-tab="tools" data-i18n="ribbonTools">도구</button>
         </div>
 
@@ -38,6 +37,14 @@
                 <button id="nextPageBtn" class="action" data-i18n="next">다음</button>
               </div>
               <div class="ribbon-group-title" data-i18n="ribbonGroupPage">페이지</div>
+            </div>
+
+            <div id="sheetSelectorGroup" class="ribbon-group hidden">
+              <div class="toolbar-group">
+                <label for="sheetSelect" class="sheet-select-label" data-i18n="sheetSelectLabel">시트</label>
+                <select id="sheetSelect" class="sheet-select" aria-label="시트 선택"></select>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupSheet">시트</div>
             </div>
 
             <div class="ribbon-group">
@@ -106,7 +113,7 @@
             </div>
           </section>
 
-          <section class="ribbon-panel" data-ribbon-panel="annotate">
+          <section class="ribbon-panel" data-ribbon-panel="tools">
             <div class="ribbon-group">
               <div class="toolbar-group">
                 <button id="editViewBtn" class="action mode active" data-mode="view" data-i18n="modeView">보기</button>
@@ -127,24 +134,6 @@
                 </button>
               </div>
               <div class="ribbon-group-title" data-i18n="ribbonGroupHistory">편집 기록</div>
-            </div>
-          </section>
-
-          <section class="ribbon-panel" data-ribbon-panel="tools">
-            <div class="ribbon-group">
-              <div class="toolbar-group">
-                <button id="quickCheckUpdateBtn" class="action" data-i18n="checkUpdate">업데이트 확인</button>
-                <button id="quickCopyContactBtn" class="action" data-i18n="copyDeveloperEmail">개발자 문의 이메일 복사</button>
-              </div>
-              <div class="ribbon-group-title" data-i18n="ribbonGroupUpdate">업데이트</div>
-            </div>
-
-            <div class="ribbon-group">
-              <div class="toolbar-group">
-                <button id="quickLangKoBtn" class="action language-chip" data-lang="ko" data-i18n="languageKo">한국어</button>
-                <button id="quickLangEnBtn" class="action language-chip" data-lang="en" data-i18n="languageEn">English</button>
-              </div>
-              <div class="ribbon-group-title" data-i18n="ribbonGroupLanguage">언어</div>
             </div>
           </section>
         </div>

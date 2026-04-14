@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const { spawnSync, spawn } = require("node:child_process");
+const { PDFDocument } = require("pdf-lib");
 const packageMeta = require("./package.json");
 
 let mainWindow = null;
@@ -28,6 +29,7 @@ let XLSXMod = null;
 let hwpJsMod = null;
 let readHwpxDocumentFn = null;
 let pdfToPrinterMod = null;
+let nodePdfJsModPromise = null;
 
 const menuText = {
   ko: {
@@ -53,7 +55,8 @@ const menuText = {
     languageKo: "한국어",
     languageEn: "English",
     updateCheck: "업데이트 확인",
-    copyDeveloperContact: "개발자 문의 이메일 복사"
+    copyDeveloperContact: "개발자 문의 이메일 복사",
+    versionInfo: "버전 정보"
   },
   en: {
     file: "File",
@@ -78,7 +81,8 @@ const menuText = {
     languageKo: "Korean",
     languageEn: "English",
     updateCheck: "Check for Updates",
-    copyDeveloperContact: "Copy Developer Email"
+    copyDeveloperContact: "Copy Developer Email",
+    versionInfo: "Version Info"
   }
 };
 
@@ -90,7 +94,9 @@ function mt(key) {
 const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"]);
 const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"]);
 const HWP_EXTENSIONS = new Set([".hwp", ".hwpx"]);
-const CONVERT_CACHE_SCHEMA_VERSION = "v2";
+const CONVERT_CACHE_SCHEMA_VERSION = "v5";
+const HWP_QUALITY_SELECTOR_VERSION = "v2";
+const HWP_SELECTION_META_VERSION = "v2";
 const FALLBACK_CACHE_TTL_MS = 45 * 60 * 1000;
 const APP_RELEASE_VERSION = String(packageMeta?.version || app.getVersion() || "0.0.0");
 pendingDocumentToOpen = extractDocumentPath(process.argv);
@@ -186,6 +192,23 @@ function ensurePdfToPrinter() {
     pdfToPrinterMod = require("pdf-to-printer");
   }
   return pdfToPrinterMod;
+}
+
+async function ensureNodePdfJs() {
+  if (!nodePdfJsModPromise) {
+    nodePdfJsModPromise = import("pdfjs-dist/legacy/build/pdf.mjs")
+      .then((mod) => {
+        if (mod?.GlobalWorkerOptions) {
+          mod.GlobalWorkerOptions.workerSrc = "";
+        }
+        return mod;
+      })
+      .catch((error) => {
+        nodePdfJsModPromise = null;
+        throw error;
+      });
+  }
+  return nodePdfJsModPromise;
 }
 
 function toBuffer(data) {
@@ -604,8 +627,12 @@ function getConversionEngineToken(convertMode = "fallback") {
       return "officecom-v1";
     case "libreoffice":
       return "libreoffice-v1";
+    case "hwp-print-pdf":
+      return `hancomcom-print-v2-${HWP_QUALITY_SELECTOR_VERSION}`;
+    case "hwp-saveas":
+      return `hancomcom-saveas-v2-${HWP_QUALITY_SELECTOR_VERSION}`;
     case "hwp-layout":
-      return "hancomcom-v1";
+      return "hancomcom-legacy-v1";
     case "hwpjs-html":
       return `hwpjs-${hwpJsVer}-hwpx-${hwpxVer}`;
     case "xlsx-html":
@@ -627,6 +654,72 @@ function createConvertedPdfPath(sourcePath, convertMode = "fallback") {
   const signature = `${resolved}|${stat.mtimeMs}|${stat.size}|${APP_RELEASE_VERSION}|${CONVERT_CACHE_SCHEMA_VERSION}|${mode}|${engineToken}`;
   const digest = crypto.createHash("sha1").update(signature).digest("hex").slice(0, 12);
   return path.join(ensureConvertedDir(), `${baseName}-${ext}-${mode}-${digest}.pdf`);
+}
+
+function buildHwpSelectionSourceSignature(sourcePath) {
+  const resolved = path.resolve(sourcePath);
+  const stat = fs.statSync(resolved);
+  const signature = `${resolved}|${stat.mtimeMs}|${stat.size}|${APP_RELEASE_VERSION}|${CONVERT_CACHE_SCHEMA_VERSION}|${HWP_SELECTION_META_VERSION}|${HWP_QUALITY_SELECTOR_VERSION}`;
+  return crypto.createHash("sha1").update(signature).digest("hex");
+}
+
+function createHwpSelectionMetaPath(sourcePath) {
+  const resolved = path.resolve(sourcePath);
+  const ext = getFileExtension(resolved).replace(".", "");
+  const baseName = path.basename(resolved, path.extname(resolved)).replace(/[^\w.\-가-힣]/g, "_").slice(0, 56);
+  const digest = buildHwpSelectionSourceSignature(resolved).slice(0, 12);
+  return path.join(ensureConvertedDir(), `${baseName}-${ext}-hwp-selector-${digest}.json`);
+}
+
+function readHwpSelectionMeta(sourcePath) {
+  try {
+    const metaPath = createHwpSelectionMetaPath(sourcePath);
+    if (!fs.existsSync(metaPath)) {
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    const sourceSignature = buildHwpSelectionSourceSignature(sourcePath);
+    if (String(parsed?.selectorVersion || "") !== HWP_SELECTION_META_VERSION) {
+      return null;
+    }
+    if (String(parsed?.sourceSignature || "") !== sourceSignature) {
+      return null;
+    }
+    const selectedPdfPath = String(parsed?.selectedPdfPath || "");
+    if (!selectedPdfPath || !fs.existsSync(selectedPdfPath)) {
+      return null;
+    }
+    return {
+      selectedMode: String(parsed?.selectedMode || ""),
+      selectedPdfPath,
+      warningMessage: String(parsed?.warningMessage || ""),
+      fallbackReason: String(parsed?.fallbackReason || ""),
+      analysisMode: String(parsed?.analysisMode || "quick"),
+      candidateScores: Array.isArray(parsed?.candidateScores) ? parsed.candidateScores : []
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeHwpSelectionMeta(sourcePath, payload = {}) {
+  try {
+    const metaPath = createHwpSelectionMetaPath(sourcePath);
+    const entry = {
+      selectorVersion: HWP_SELECTION_META_VERSION,
+      sourceSignature: buildHwpSelectionSourceSignature(sourcePath),
+      selectedMode: String(payload.selectedMode || ""),
+      selectedPdfPath: String(payload.selectedPdfPath || ""),
+      warningMessage: String(payload.warningMessage || ""),
+      fallbackReason: String(payload.fallbackReason || ""),
+      analysisMode: String(payload.analysisMode || "quick"),
+      candidateScores: Array.isArray(payload.candidateScores) ? payload.candidateScores : [],
+      updatedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(metaPath, JSON.stringify(entry, null, 2), "utf8");
+  } catch (_error) {
+    // ignore selector meta write failures
+  }
 }
 
 function readCachedPdf(cachePath, options = {}) {
@@ -755,6 +848,22 @@ function runPowerShell(script, timeoutMs = 180000) {
   };
 }
 
+async function runPowerShellAsync(script, timeoutMs = 180000) {
+  const result = await runProcess(
+    "powershell",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    timeoutMs
+  );
+  return {
+    ok: Boolean(result.ok),
+    status: result.status,
+    timedOut: Boolean(result.timedOut),
+    stdout: String(result.stdout || "").trim(),
+    stderr: String(result.stderr || "").trim(),
+    error: String(result.error || "")
+  };
+}
+
 function runProcess(command, args, timeoutMs = 180000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -857,6 +966,19 @@ function buildConversionWarning(sourceExt, engineMessage, hint) {
   return `${extLabel} 문서: ${reason} (${details.slice(0, 120)})`;
 }
 
+function logConvertTrace(stage, payload = {}) {
+  try {
+    const record = {
+      stage: String(stage || ""),
+      ts: new Date().toISOString(),
+      ...payload
+    };
+    console.info(`[lookup-convert] ${JSON.stringify(record)}`);
+  } catch (_error) {
+    // ignore logging errors
+  }
+}
+
 function normalizeText(text) {
   return String(text || "")
     .replace(/\r\n/g, "\n")
@@ -890,7 +1012,315 @@ async function isLikelyBookletPdf(pdfPath) {
   }
 }
 
-function convertWithWordCom(sourcePath, outputPdfPath) {
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
+}
+
+function normalizeTextRect(item) {
+  const transform = Array.isArray(item?.transform) ? item.transform : [];
+  const x = Number(transform[4] || 0);
+  const y = Number(transform[5] || 0);
+  const height = Math.max(1, Math.abs(Number(transform[3] || item?.height || 0)));
+  const width = Math.max(1, Math.abs(Number(item?.width || 0)));
+  return {
+    xMin: x,
+    xMax: x + width,
+    yMin: y - height,
+    yMax: y,
+    width,
+    height
+  };
+}
+
+function horizontalOverlapWidth(aMin, aMax, bMin, bMax) {
+  return Math.max(0, Math.min(aMax, bMax) - Math.max(aMin, bMin));
+}
+
+function countLineTextOverlaps(segment, textRects) {
+  let matches = 0;
+  for (const rect of textRects) {
+    const overlap = horizontalOverlapWidth(segment.xMin, segment.xMax, rect.xMin, rect.xMax);
+    if (overlap <= 0) {
+      continue;
+    }
+    const overlapRatio = overlap / Math.max(1, rect.width);
+    if (overlapRatio < 0.3) {
+      continue;
+    }
+    const yTolerance = Math.max(1.5, rect.height * 0.45);
+    if (segment.y >= rect.yMin - yTolerance && segment.y <= rect.yMax + yTolerance) {
+      matches += 1;
+    }
+  }
+  return matches;
+}
+
+function estimateRasterLineArtifacts(segments, textRects, pageWidth) {
+  let rasterLineHitCount = 0;
+  let textPierceRatio = 0;
+  const safePageWidth = Math.max(1, Number(pageWidth || 0));
+  for (const segment of segments) {
+    const coverage = Number(segment.length || 0) / safePageWidth;
+    if (coverage < 0.35) {
+      continue;
+    }
+    let piercedRects = 0;
+    let piercedWidth = 0;
+    for (const rect of textRects) {
+      const overlap = horizontalOverlapWidth(segment.xMin, segment.xMax, rect.xMin, rect.xMax);
+      if (overlap <= 0) {
+        continue;
+      }
+      const overlapRatio = overlap / Math.max(1, rect.width);
+      if (overlapRatio < 0.35) {
+        continue;
+      }
+      const centerY = (rect.yMin + rect.yMax) / 2;
+      const centerTolerance = Math.max(1.2, rect.height * 0.28);
+      if (Math.abs(segment.y - centerY) <= centerTolerance) {
+        piercedRects += 1;
+        piercedWidth += overlap;
+      }
+    }
+    if (piercedRects >= 2 && coverage >= 0.42) {
+      rasterLineHitCount += 1;
+      textPierceRatio += clampNumber((piercedWidth / safePageWidth) * 0.55 + coverage * 0.45, 0, 1);
+    }
+  }
+  return {
+    rasterLineHitCount,
+    textLinePierceRatio: clampNumber(textPierceRatio, 0, 1)
+  };
+}
+
+function extractHorizontalSegmentsFromOperatorList(pdfjsLib, operatorList, pageWidth) {
+  const OPS = pdfjsLib.OPS || {};
+  const segments = [];
+  const minLength = Math.max(80, Number(pageWidth || 0) * 0.22);
+  const fnArray = Array.isArray(operatorList?.fnArray) ? operatorList.fnArray : [];
+  const argsArray = Array.isArray(operatorList?.argsArray) ? operatorList.argsArray : [];
+  for (let i = 0; i < fnArray.length; i += 1) {
+    if (fnArray[i] !== OPS.constructPath) {
+      continue;
+    }
+    const entry = argsArray[i] || [];
+    const pathOps = Array.isArray(entry[0]) ? entry[0] : [];
+    const pathArgs = Array.isArray(entry[1]) ? entry[1] : [];
+    let argIdx = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let startX = 0;
+    let startY = 0;
+    for (const pathOp of pathOps) {
+      if (pathOp === OPS.moveTo) {
+        currentX = Number(pathArgs[argIdx++] || 0);
+        currentY = Number(pathArgs[argIdx++] || 0);
+        startX = currentX;
+        startY = currentY;
+        continue;
+      }
+      if (pathOp === OPS.lineTo) {
+        const nextX = Number(pathArgs[argIdx++] || 0);
+        const nextY = Number(pathArgs[argIdx++] || 0);
+        const dx = Math.abs(nextX - currentX);
+        const dy = Math.abs(nextY - currentY);
+        if (dx >= minLength && dy <= 1.2) {
+          segments.push({
+            xMin: Math.min(currentX, nextX),
+            xMax: Math.max(currentX, nextX),
+            y: (currentY + nextY) / 2,
+            length: dx
+          });
+        }
+        currentX = nextX;
+        currentY = nextY;
+        continue;
+      }
+      if (pathOp === OPS.closePath) {
+        const dx = Math.abs(startX - currentX);
+        const dy = Math.abs(startY - currentY);
+        if (dx >= minLength && dy <= 1.2) {
+          segments.push({
+            xMin: Math.min(currentX, startX),
+            xMax: Math.max(currentX, startX),
+            y: (currentY + startY) / 2,
+            length: dx
+          });
+        }
+        currentX = startX;
+        currentY = startY;
+        continue;
+      }
+      if (pathOp === OPS.rectangle) {
+        argIdx += 4;
+        continue;
+      }
+      if (pathOp === OPS.curveTo) {
+        argIdx += 6;
+        continue;
+      }
+      if (pathOp === OPS.curveTo2 || pathOp === OPS.curveTo3) {
+        argIdx += 4;
+        continue;
+      }
+    }
+  }
+  return segments;
+}
+
+async function analyzeHwpPdfQuality(pdfPath, options = {}) {
+  const analysisMode = String(options.analysisMode || "full").toLowerCase() === "quick" ? "quick" : "full";
+  const maxPages = Number(options.maxPages || (analysisMode === "quick" ? 1 : 2));
+  if (!pdfPath || !fs.existsSync(pdfPath)) {
+    return {
+      inspected: false,
+      analysisMode,
+      score: 0,
+      metrics: {
+        longLineCount: 0,
+        overlapLineCount: 0,
+        rasterLineHitCount: 0,
+        textLinePierceRatio: 0,
+        readableChars: 0,
+        bookletLikePages: 0,
+        sampledPages: 0,
+        vectorLineScore: 0,
+        rasterLineScore: 0,
+        finalScore: 0
+      }
+    };
+  }
+  try {
+    const pdfjsLib = await ensureNodePdfJs();
+    const loadingTask = pdfjsLib.getDocument({
+      url: pathToFileURL(pdfPath).href,
+      disableWorker: true,
+      stopAtErrors: false,
+      useSystemFonts: true
+    });
+    const doc = await loadingTask.promise;
+    const sampleCount = Math.min(maxPages, Number(doc.numPages || 0));
+    let longLineCount = 0;
+    let overlapLineCount = 0;
+    let rasterLineHitCount = 0;
+    let textLinePierceRatioAccum = 0;
+    let readableChars = 0;
+    let bookletLikePages = 0;
+    for (let pageNumber = 1; pageNumber <= sampleCount; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      const pageRatio = Number(viewport.width || 0) / Math.max(1, Number(viewport.height || 0));
+      if (pageRatio >= 1.45) {
+        bookletLikePages += 1;
+      }
+      const textContent = await page.getTextContent({ disableCombineTextItems: false });
+      const textRects = [];
+      for (const item of textContent.items || []) {
+        const str = String(item?.str || "");
+        if (!str.trim()) {
+          continue;
+        }
+        readableChars += str.replace(/\s+/g, "").length;
+        textRects.push(normalizeTextRect(item));
+      }
+      const operatorList = await page.getOperatorList();
+      const segments = extractHorizontalSegmentsFromOperatorList(pdfjsLib, operatorList, viewport.width);
+      longLineCount += segments.length;
+      for (const segment of segments) {
+        const overlaps = countLineTextOverlaps(segment, textRects);
+        if (overlaps >= 2) {
+          overlapLineCount += 1;
+        }
+      }
+      const rasterEstimate = estimateRasterLineArtifacts(segments, textRects, viewport.width);
+      rasterLineHitCount += rasterEstimate.rasterLineHitCount;
+      textLinePierceRatioAccum += rasterEstimate.textLinePierceRatio;
+      try {
+        page.cleanup();
+      } catch (_error) {
+        // ignore page cleanup failure
+      }
+    }
+    await doc.destroy();
+    try {
+      await loadingTask.destroy();
+    } catch (_error) {
+      // ignore task cleanup failure
+    }
+    const textLinePierceRatio = sampleCount > 0 ? clampNumber(textLinePierceRatioAccum / sampleCount, 0, 1) : 0;
+    let vectorLineScore = 100;
+    vectorLineScore -= clampNumber(overlapLineCount * 10, 0, 60);
+    vectorLineScore -= clampNumber((longLineCount - overlapLineCount) * 1.4, 0, 20);
+    vectorLineScore -= clampNumber(bookletLikePages * 22, 0, 44);
+    if (readableChars < 20) {
+      vectorLineScore -= 8;
+    }
+    vectorLineScore = clampNumber(vectorLineScore, 0, 100);
+    let rasterLineScore = 100;
+    rasterLineScore -= clampNumber(rasterLineHitCount * 14, 0, 62);
+    rasterLineScore -= clampNumber(textLinePierceRatio * 48, 0, 42);
+    rasterLineScore -= clampNumber(bookletLikePages * 12, 0, 36);
+    rasterLineScore = clampNumber(rasterLineScore, 0, 100);
+    const finalScore = clampNumber(Math.round(vectorLineScore * 0.62 + rasterLineScore * 0.38), 0, 100);
+    return {
+      inspected: true,
+      analysisMode,
+      score: finalScore,
+      metrics: {
+        longLineCount,
+        overlapLineCount,
+        rasterLineHitCount,
+        textLinePierceRatio,
+        readableChars,
+        bookletLikePages,
+        sampledPages: sampleCount,
+        vectorLineScore,
+        rasterLineScore,
+        finalScore
+      }
+    };
+  } catch (_error) {
+    return {
+      inspected: false,
+      analysisMode,
+      score: 0,
+      metrics: {
+        longLineCount: 0,
+        overlapLineCount: 0,
+        rasterLineHitCount: 0,
+        textLinePierceRatio: 0,
+        readableChars: 0,
+        bookletLikePages: 0,
+        sampledPages: 0,
+        vectorLineScore: 0,
+        rasterLineScore: 0,
+        finalScore: 0
+      }
+    };
+  }
+}
+
+function chooseBestHwpCandidate(candidates) {
+  const valid = candidates.filter((candidate) => candidate.available);
+  if (!valid.length) {
+    return null;
+  }
+  valid.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    if (a.mode === "hwp-saveas" && b.mode !== "hwp-saveas") {
+      return -1;
+    }
+    if (b.mode === "hwp-saveas" && a.mode !== "hwp-saveas") {
+      return 1;
+    }
+    return 0;
+  });
+  return valid[0];
+}
+
+async function convertWithWordCom(sourcePath, outputPdfPath) {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
   const script = [
@@ -909,10 +1339,10 @@ function convertWithWordCom(sourcePath, outputPdfPath) {
     "if (-not (Test-Path " + output + ")) { throw 'word_export_failed' }"
   ].join("; ");
 
-  return runPowerShell(script, 180000);
+  return await runPowerShellAsync(script, 180000);
 }
 
-function convertWithExcelCom(sourcePath, outputPdfPath) {
+async function convertWithExcelCom(sourcePath, outputPdfPath) {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
   const script = [
@@ -932,10 +1362,10 @@ function convertWithExcelCom(sourcePath, outputPdfPath) {
     "if (-not (Test-Path " + output + ")) { throw 'excel_export_failed' }"
   ].join("; ");
 
-  return runPowerShell(script, 180000);
+  return await runPowerShellAsync(script, 180000);
 }
 
-function convertWithHancomCom(sourcePath, outputPdfPath, ext = ".hwp") {
+async function convertWithHancomComPrintPdf(sourcePath, outputPdfPath, ext = ".hwp") {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
   const format = ext === ".hwpx" ? "HWPX" : "HWP";
@@ -984,7 +1414,88 @@ function convertWithHancomCom(sourcePath, outputPdfPath, ext = ".hwp") {
     "  $hwp.XHwpWindows.Item(0).Visible = $false",
     "  $opened = $hwp.Open(" + source + ", '" + format + "', 'forceopen:true;versionwarning:false')",
     "  if (-not $opened) { throw 'hwp_open_failed' }",
-    "  $saved = $hwp.SaveAs(" + output + ", 'PDF', '')",
+    "  try { $hwp.Run('Cancel') | Out-Null } catch {}",
+    "  try { $hwp.HAction.GetDefault('Print', $hwp.HParameterSet.HPrint.HSet) | Out-Null } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintToFile = 1 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.FileName = " + output + " } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrnName = 'Microsoft Print to PDF' } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrinterName = 'Microsoft Print to PDF' } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintMethod = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintImage = 1 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.Collate = 1 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.NumCopy = 1 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.ReverseOrder = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.Pause = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.MarkPen = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.Memo = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintMemo = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintRevision = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.PrintGuideLine = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.ShowMarkPen = 0 } catch {}",
+    "  try { $hwp.HParameterSet.HPrint.DrawObj = 1 } catch {}",
+    "  try { Write-Output ('lookup_hprint_snapshot=' + $hwp.HParameterSet.HPrint.PrintToFile + '|' + $hwp.HParameterSet.HPrint.PrintRevision + '|' + $hwp.HParameterSet.HPrint.PrintGuideLine + '|' + $hwp.HParameterSet.HPrint.ShowMarkPen + '|' + $hwp.HParameterSet.HPrint.Memo) } catch {}",
+    "  $printed = $false",
+    "  try { $printed = $hwp.HAction.Execute('Print', $hwp.HParameterSet.HPrint.HSet) } catch { $printed = $false }",
+    "  if (-not $printed) { throw 'hwp_print_failed' }",
+    "  Write-Output 'lookup_hwp_registered=1'",
+    "} finally {",
+    "  if ($hwp -ne $null) { try { $hwp.Quit() | Out-Null } catch {} }",
+    "}",
+    "if (-not (Test-Path " + output + ")) { throw 'hwp_export_failed' }"
+  ].join("; ");
+  return await runPowerShellAsync(script, 120000);
+}
+
+async function convertWithHancomComSaveAs(sourcePath, outputPdfPath, ext = ".hwp") {
+  const source = escapeForPowerShell(sourcePath);
+  const output = escapeForPowerShell(outputPdfPath);
+  const format = ext === ".hwpx" ? "HWPX" : "HWP";
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$hwp = $null",
+    "$moduleRoot = 'HKCU:\\SOFTWARE\\HNC\\HwpAutomation\\Modules'",
+    "$moduleName = 'lookupFilePathChecker'",
+    "$modulePath = ''",
+    "$registered = $false",
+    "try {",
+    "  if (-not (Test-Path $moduleRoot)) { New-Item -Path $moduleRoot -Force | Out-Null }",
+    "  $regValue = Get-ItemProperty -Path $moduleRoot -Name $moduleName -ErrorAction SilentlyContinue",
+    "  if ($regValue -and $regValue.$moduleName) { $modulePath = [string]$regValue.$moduleName }",
+    "  if (-not $modulePath -or -not (Test-Path $modulePath)) {",
+    "    $candidates = @(",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "    )",
+    "    foreach ($candidate in $candidates) {",
+    "      if ($candidate -and (Test-Path $candidate)) {",
+    "        $modulePath = $candidate",
+    "        break",
+    "      }",
+    "    }",
+    "    if ($modulePath -and (Test-Path $modulePath)) {",
+    "      Set-ItemProperty -Path $moduleRoot -Name $moduleName -Value $modulePath -Type String -Force",
+    "    }",
+    "  }",
+    "  $hwp = New-Object -ComObject HWPFrame.HwpObject",
+    "  if ($modulePath -and (Test-Path $modulePath)) {",
+    "    try { $hwp.RegisterModule('FilePathCheckDLL', $moduleName) | Out-Null; $registered = $true } catch {}",
+    "  }",
+    "  if (-not $registered) {",
+    "    try { $hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') | Out-Null; $registered = $true } catch {}",
+    "  }",
+    "  if (-not $registered) { throw 'hwp_security_module_missing' }",
+    "  $hwp.XHwpWindows.Item(0).Visible = $false",
+    "  $opened = $hwp.Open(" + source + ", '" + format + "', 'forceopen:true;versionwarning:false')",
+    "  if (-not $opened) { throw 'hwp_open_failed' }",
+    "  $saved = $hwp.SaveAs(" + output + ", 'PDF', 'embedfont:true;bookmark:true;compress:false')",
     "  if (-not $saved) { throw 'hwp_save_failed' }",
     "  Write-Output 'lookup_hwp_registered=1'",
     "} finally {",
@@ -992,7 +1503,7 @@ function convertWithHancomCom(sourcePath, outputPdfPath, ext = ".hwp") {
     "}",
     "if (-not (Test-Path " + output + ")) { throw 'hwp_export_failed' }"
   ].join("; ");
-  return runPowerShell(script, 90000);
+  return await runPowerShellAsync(script, 90000);
 }
 
 async function convertWithLibreOffice(sourcePath, outputPdfPath) {
@@ -1250,12 +1761,25 @@ function buildFallbackHtml({ sourcePath, sourceExt, contentText, warningMessage 
 </html>`;
 }
 
+function readSpreadsheetSheetNames(sourcePath) {
+  try {
+    const XLSX = ensureXlsxModule();
+    const workbook = XLSX.readFile(sourcePath, { cellDates: false, dense: true });
+    return (workbook.SheetNames || []).map((name) => String(name || "").trim()).filter(Boolean);
+  } catch (_error) {
+    return [];
+  }
+}
+
 function buildSpreadsheetFallbackHtml({ sourcePath, sourceExt, warningMessage }) {
   const XLSX = ensureXlsxModule();
   const workbook = XLSX.readFile(sourcePath, { cellDates: false, dense: false });
   const sections = [];
+  const sheetMap = [];
   const maxRows = 300;
   const maxCols = 32;
+  const chunkRows = 42;
+  let nextPageNumber = 1;
   for (const sheetName of workbook.SheetNames || []) {
     const sheet = workbook.Sheets[sheetName];
     if (!sheet || !sheet["!ref"]) {
@@ -1267,7 +1791,7 @@ function buildSpreadsheetFallbackHtml({ sourcePath, sourceExt, warningMessage })
     const startCol = range.s.c;
     const endCol = Math.min(range.e.c, startCol + maxCols - 1);
 
-    let htmlRows = "";
+    const htmlRows = [];
     let hasAnyValue = false;
     for (let row = startRow; row <= endRow; row += 1) {
       let rowCells = "";
@@ -1283,23 +1807,42 @@ function buildSpreadsheetFallbackHtml({ sourcePath, sourceExt, warningMessage })
         rowCells += `<td>${escapeHtml(cellText)}</td>`;
       }
       if (rowHasValue || row === startRow) {
-        htmlRows += `<tr>${rowCells}</tr>`;
+        htmlRows.push(`<tr>${rowCells}</tr>`);
       }
     }
 
-    if (!htmlRows || !hasAnyValue) {
+    if (!htmlRows.length || !hasAnyValue) {
       continue;
     }
-    sections.push(`<section class="sheet"><h2>${escapeHtml(sheetName)}</h2><table>${htmlRows}</table></section>`);
+    const pageCountForSheet = Math.max(1, Math.ceil(htmlRows.length / chunkRows));
+    const sheetStartPage = nextPageNumber;
+    for (let chunkIndex = 0; chunkIndex < pageCountForSheet; chunkIndex += 1) {
+      const chunkStart = chunkIndex * chunkRows;
+      const chunkEnd = chunkStart + chunkRows;
+      const rowsChunk = htmlRows.slice(chunkStart, chunkEnd).join("");
+      const chunkTitle =
+        pageCountForSheet > 1 ? `${escapeHtml(sheetName)} (${chunkIndex + 1}/${pageCountForSheet})` : escapeHtml(sheetName);
+      sections.push(`<section class="sheet"><h2>${chunkTitle}</h2><table>${rowsChunk}</table></section>`);
+      nextPageNumber += 1;
+    }
+    sheetMap.push({
+      sheetName,
+      startPage: sheetStartPage,
+      endPage: nextPageNumber - 1
+    });
   }
 
   if (!sections.length) {
-    return "";
+    return {
+      html: "",
+      sheetMap: []
+    };
   }
   const safeTitle = escapeHtml(path.basename(sourcePath));
   const safeExt = escapeHtml(sourceExt.replace(".", "").toUpperCase());
   const warning = warningMessage ? `<div class="warning">${escapeHtml(warningMessage)}</div>` : "";
-  return `<!doctype html>
+  return {
+    html: `<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
@@ -1325,7 +1868,9 @@ function buildSpreadsheetFallbackHtml({ sourcePath, sourceExt, warningMessage })
   ${warning}
   ${sections.join("\n")}
 </body>
-</html>`;
+</html>`,
+    sheetMap
+  };
 }
 
 async function htmlToPdfBuffer(html) {
@@ -1388,6 +1933,12 @@ async function extractDocumentTextForFallback(filePath, ext) {
 }
 
 async function convertOfficeFileToPdf(sourcePath, ext) {
+  const spreadsheetSheetNames = ext === ".xls" || ext === ".xlsx" ? readSpreadsheetSheetNames(sourcePath) : [];
+  const spreadsheetUnknownSheetMap = spreadsheetSheetNames.map((sheetName) => ({
+    sheetName,
+    startPage: null,
+    endPage: null
+  }));
   if (ext === ".xls" || ext === ".xlsx") {
     const spreadsheetInspection = inspectSpreadsheetContent(sourcePath);
     if (!spreadsheetInspection.hasContent) {
@@ -1396,7 +1947,8 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
         engine: "empty",
         errorCode: "EMPTY_DOCUMENT",
         warningMessage: "문서에 표시할 셀 내용이 없습니다.",
-        emptyDocument: true
+        emptyDocument: true,
+        sheetMap: spreadsheetUnknownSheetMap
       };
     }
   }
@@ -1410,15 +1962,16 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
       warningMessage: "",
       pdfPath: cachedOffice,
       fromCache: true,
-      errorCode: ""
+      errorCode: "",
+      sheetMap: spreadsheetUnknownSheetMap
     };
   }
 
   let comResult = { ok: false, stderr: "unsupported_office_ext" };
   if (ext === ".doc" || ext === ".docx") {
-    comResult = convertWithWordCom(sourcePath, officePdfPath);
+    comResult = await convertWithWordCom(sourcePath, officePdfPath);
   } else if (ext === ".xls" || ext === ".xlsx") {
-    comResult = convertWithExcelCom(sourcePath, officePdfPath);
+    comResult = await convertWithExcelCom(sourcePath, officePdfPath);
   }
 
   if (comResult.ok && fs.existsSync(officePdfPath)) {
@@ -1428,7 +1981,8 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
       warningMessage: "",
       pdfPath: officePdfPath,
       fromCache: false,
-      errorCode: ""
+      errorCode: "",
+      sheetMap: spreadsheetUnknownSheetMap
     };
   }
 
@@ -1441,7 +1995,8 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
       warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
       pdfPath: cachedLibre,
       fromCache: true,
-      errorCode: ""
+      errorCode: "",
+      sheetMap: spreadsheetUnknownSheetMap
     };
   }
 
@@ -1453,7 +2008,8 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
       warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
       pdfPath: librePdfPath,
       fromCache: false,
-      errorCode: ""
+      errorCode: "",
+      sheetMap: spreadsheetUnknownSheetMap
     };
   }
 
@@ -1473,8 +2029,125 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
     engine: "fallback",
     warningMessage: buildConversionWarning(ext, details, reasonHint),
     errorCode: timedOut ? "ENGINE_TIMEOUT" : libreResult.missingEngine ? "ENGINE_MISSING" : "CONVERT_FAILED",
-    emptyDocument: false
+    emptyDocument: false,
+    sheetMap: spreadsheetUnknownSheetMap
   };
+}
+
+async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analysisMode = "full" }) {
+  const exists = Boolean(pdfPath && fs.existsSync(pdfPath));
+  if (!exists) {
+    return {
+      mode,
+      path: pdfPath,
+      available: false,
+      fromCache: Boolean(fromCache),
+      runResult: runResult || null,
+      analysis: {
+        inspected: false,
+        analysisMode,
+        score: 0,
+        metrics: {
+          longLineCount: 0,
+          overlapLineCount: 0,
+          rasterLineHitCount: 0,
+          textLinePierceRatio: 0,
+          readableChars: 0,
+          bookletLikePages: 0,
+          sampledPages: 0,
+          vectorLineScore: 0,
+          rasterLineScore: 0,
+          finalScore: 0
+        }
+      },
+      bookletLike: false,
+      score: 0
+    };
+  }
+  const normalizedMode = String(analysisMode || "full").toLowerCase() === "quick" ? "quick" : "full";
+  const analysis = await analyzeHwpPdfQuality(pdfPath, {
+    analysisMode: normalizedMode,
+    maxPages: normalizedMode === "quick" ? 1 : 2
+  });
+  const bookletLike = Boolean(analysis?.metrics?.bookletLikePages > 0 || (await isLikelyBookletPdf(pdfPath)));
+  let score = Number(analysis?.score || 0);
+  if (bookletLike) {
+    score = Math.max(0, score - 30);
+  }
+  if (mode === "hwp-saveas") {
+    score += 1;
+  }
+  return {
+    mode,
+    path: pdfPath,
+    available: true,
+    fromCache: Boolean(fromCache),
+    runResult: runResult || null,
+    analysis,
+    bookletLike,
+    score: clampNumber(score, 0, 100)
+  };
+}
+
+function buildHwpSelectionWarning(selected, candidates) {
+  if (!selected) {
+    return "";
+  }
+  if (selected.mode === "hwp-print-pdf" && selected.score >= 70) {
+    return "";
+  }
+  const printCandidate = candidates.find((candidate) => candidate.mode === "hwp-print-pdf");
+  if (selected.mode === "hwp-saveas" && printCandidate?.available) {
+    if (printCandidate.bookletLike || Number(printCandidate.analysis?.metrics?.overlapLineCount || 0) >= 2) {
+      return "변환 결과에 표시 오류가 감지되어 다른 변환 방식으로 자동 전환했습니다.";
+    }
+  }
+  if (selected.mode === "hwp-saveas" && !printCandidate?.available) {
+    return "한컴 변환 설정 확인이 필요합니다. 호환 보기로 열었습니다.";
+  }
+  if (selected.mode === "hwpjs-html") {
+    return "한컴 변환 설정 확인이 필요합니다. 호환 보기로 열었습니다.";
+  }
+  return "";
+}
+
+function buildHwpCandidateScoreRows(candidates) {
+  return candidates.map((candidate) => ({
+    mode: candidate.mode,
+    score: candidate.score,
+    fromCache: candidate.fromCache,
+    bookletLike: candidate.bookletLike,
+    inspected: candidate.analysis.inspected,
+    analysisMode: candidate.analysis.analysisMode || "full",
+    longLineCount: candidate.analysis.metrics.longLineCount,
+    overlapLineCount: candidate.analysis.metrics.overlapLineCount,
+    rasterLineHitCount: candidate.analysis.metrics.rasterLineHitCount,
+    textLinePierceRatio: Number(candidate.analysis.metrics.textLinePierceRatio || 0),
+    readableChars: candidate.analysis.metrics.readableChars,
+    vectorLineScore: Number(candidate.analysis.metrics.vectorLineScore || 0),
+    rasterLineScore: Number(candidate.analysis.metrics.rasterLineScore || 0),
+    finalScore: Number(candidate.analysis.metrics.finalScore || candidate.score || 0)
+  }));
+}
+
+function isHwpQuickCandidateStable(candidate) {
+  if (!candidate?.available) {
+    return false;
+  }
+  const metrics = candidate.analysis?.metrics || {};
+  if (candidate.bookletLike) {
+    return false;
+  }
+  if (Number(metrics.overlapLineCount || 0) >= 2) {
+    return false;
+  }
+  if (Number(metrics.rasterLineHitCount || 0) >= 2) {
+    return false;
+  }
+  if (Number(metrics.textLinePierceRatio || 0) >= 0.26) {
+    return false;
+  }
+  return Number(candidate.score || 0) >= 82;
 }
 
 async function convertDocumentToPdf(sourcePath) {
@@ -1501,6 +2174,12 @@ async function convertDocumentToPdf(sourcePath) {
       convertMode: "native",
       warningMessage: "",
       errorCode: "",
+      convertDiagnostics: {
+        selectedMode: "native",
+        candidateScores: [],
+        fallbackReason: ""
+      },
+      sheetMap: [],
       pdfPath: resolved,
       pdfBuffer: await fsp.readFile(resolved)
     };
@@ -1519,6 +2198,12 @@ async function convertDocumentToPdf(sourcePath) {
         convertMode: officeResult.engine || "office-com",
         warningMessage: officeResult.warningMessage || "",
         errorCode: "",
+        convertDiagnostics: {
+          selectedMode: officeResult.engine || "office-com",
+          candidateScores: [],
+          fallbackReason: ""
+        },
+        sheetMap: Array.isArray(officeResult.sheetMap) ? officeResult.sheetMap : [],
         pdfPath: officeResult.pdfPath,
         pdfBuffer: await fsp.readFile(officeResult.pdfPath)
       };
@@ -1526,96 +2211,287 @@ async function convertDocumentToPdf(sourcePath) {
     warningMessage = officeResult.warningMessage || "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
     errorCode = officeResult.errorCode || "";
   } else if (HWP_EXTENSIONS.has(ext)) {
-    const hwpLayoutPdfPath = createConvertedPdfPath(resolved, "hwp-layout");
-    const cachedHwpLayout = readCachedPdf(hwpLayoutPdfPath);
-    if (cachedHwpLayout) {
+    logConvertTrace("hwp-open-start", { source: path.basename(resolved), ext });
+    const hwpPrintPdfPath = createConvertedPdfPath(resolved, "hwp-print-pdf");
+    const hwpSaveAsPdfPath = createConvertedPdfPath(resolved, "hwp-saveas");
+    let hwpPrintResult = null;
+    let hwpSaveAsResult = null;
+    let hwpJsResult = null;
+    const hwpJsPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
+    const hwpCandidates = [];
+
+    const selectorMeta = readHwpSelectionMeta(resolved);
+    if (selectorMeta?.selectedMode && selectorMeta?.selectedPdfPath && fs.existsSync(selectorMeta.selectedPdfPath)) {
+      logConvertTrace("hwp-meta-hit", {
+        selectedMode: selectorMeta.selectedMode,
+        analysisMode: selectorMeta.analysisMode || "quick",
+        source: path.basename(resolved)
+      });
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
-        convertMode: "hwp-layout",
-        warningMessage: "",
-        errorCode: "",
-        pdfPath: cachedHwpLayout,
-        pdfBuffer: await fsp.readFile(cachedHwpLayout)
+        convertMode: selectorMeta.selectedMode,
+        warningMessage: selectorMeta.warningMessage || "",
+        errorCode: selectorMeta.warningMessage ? "RENDER_ARTIFACT_DETECTED" : "",
+        convertDiagnostics: {
+          selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+          selectedMode: selectorMeta.selectedMode,
+          analysisMode: selectorMeta.analysisMode || "quick",
+          candidateScores: Array.isArray(selectorMeta.candidateScores) ? selectorMeta.candidateScores : [],
+          fallbackReason: selectorMeta.fallbackReason || selectorMeta.warningMessage || ""
+        },
+        sheetMap: [],
+        pdfPath: selectorMeta.selectedPdfPath,
+        pdfBuffer: await fsp.readFile(selectorMeta.selectedPdfPath)
       };
     }
 
-    const hwpResult = convertWithHancomCom(resolved, hwpLayoutPdfPath, ext);
-    if (hwpResult.ok && fs.existsSync(hwpLayoutPdfPath)) {
-      const suspiciousTwoUp = await isLikelyBookletPdf(hwpLayoutPdfPath);
-      if (suspiciousTwoUp) {
-        const retryPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
-        const retryResult = await convertHwpToPdfWithHwpJs(resolved, retryPdfPath);
-        if (retryResult.ok && fs.existsSync(retryPdfPath)) {
-          const retryTwoUp = await isLikelyBookletPdf(retryPdfPath);
-          if (!retryTwoUp) {
-            return {
-              sourcePath: resolved,
-              sourceExt: ext,
-              converted: true,
-              convertMode: "hwpjs-html",
-              warningMessage: "책자형 페이지가 감지되어 단면 보기용으로 다시 변환했습니다.",
-              errorCode: "",
-              pdfPath: retryPdfPath,
-              pdfBuffer: await fsp.readFile(retryPdfPath)
-            };
-          }
+    const hwpPrintCached = readCachedPdf(hwpPrintPdfPath);
+    let printCandidate = hwpPrintCached
+      ? await collectHwpCandidate({
+        mode: "hwp-print-pdf",
+        pdfPath: hwpPrintCached,
+        fromCache: true,
+        analysisMode: "quick"
+      })
+      : await (async () => {
+        hwpPrintResult = await convertWithHancomComPrintPdf(resolved, hwpPrintPdfPath, ext);
+        return collectHwpCandidate({
+          mode: "hwp-print-pdf",
+          pdfPath: hwpPrintPdfPath,
+          fromCache: false,
+          runResult: hwpPrintResult,
+          analysisMode: "quick"
+        });
+      })();
+    hwpCandidates.push(printCandidate);
+
+    if (isHwpQuickCandidateStable(printCandidate)) {
+      logConvertTrace("hwp-quick-pass", {
+        selectedMode: printCandidate.mode,
+        score: printCandidate.score,
+        source: path.basename(resolved)
+      });
+      const selectionWarning = buildHwpSelectionWarning(printCandidate, hwpCandidates);
+      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
+      writeHwpSelectionMeta(resolved, {
+        selectedMode: printCandidate.mode,
+        selectedPdfPath: printCandidate.path,
+        warningMessage: selectionWarning,
+        fallbackReason: selectionWarning || "",
+        analysisMode: "quick",
+        candidateScores
+      });
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: printCandidate.mode,
+        warningMessage: selectionWarning,
+        errorCode: selectionWarning ? "RENDER_ARTIFACT_DETECTED" : "",
+        convertDiagnostics: {
+          selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+          selectedMode: printCandidate.mode,
+          analysisMode: "quick",
+          candidateScores,
+          fallbackReason: selectionWarning || ""
+        },
+        sheetMap: [],
+        pdfPath: printCandidate.path,
+        pdfBuffer: await fsp.readFile(printCandidate.path)
+      };
+    }
+
+    if (printCandidate?.available && String(printCandidate.analysis?.analysisMode || "").toLowerCase() !== "full") {
+      printCandidate = await collectHwpCandidate({
+        mode: "hwp-print-pdf",
+        pdfPath: printCandidate.path,
+        fromCache: true,
+        runResult: hwpPrintResult,
+        analysisMode: "full"
+      });
+      hwpCandidates[0] = printCandidate;
+    }
+
+    const hwpSaveAsCached = readCachedPdf(hwpSaveAsPdfPath);
+    const saveAsCandidate = hwpSaveAsCached
+      ? await collectHwpCandidate({
+        mode: "hwp-saveas",
+        pdfPath: hwpSaveAsCached,
+        fromCache: true,
+        analysisMode: "full"
+      })
+      : await (async () => {
+        hwpSaveAsResult = await convertWithHancomComSaveAs(resolved, hwpSaveAsPdfPath, ext);
+        return collectHwpCandidate({
+          mode: "hwp-saveas",
+          pdfPath: hwpSaveAsPdfPath,
+          fromCache: false,
+          runResult: hwpSaveAsResult,
+          analysisMode: "full"
+        });
+      })();
+    hwpCandidates.push(saveAsCandidate);
+
+    let selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
+    const needHwpJsCompare = !selectedCandidate || Number(selectedCandidate.score || 0) < 68;
+    if (needHwpJsCompare) {
+      const cachedHwpJs = readCachedPdf(hwpJsPdfPath);
+      let hwpJsCandidate = cachedHwpJs
+        ? await collectHwpCandidate({
+          mode: "hwpjs-html",
+          pdfPath: cachedHwpJs,
+          fromCache: true,
+          analysisMode: "full"
+        })
+        : null;
+      if (!hwpJsCandidate) {
+        hwpJsResult = await convertHwpToPdfWithHwpJs(resolved, hwpJsPdfPath);
+        if (hwpJsResult.ok && fs.existsSync(hwpJsPdfPath)) {
+          hwpJsCandidate = await collectHwpCandidate({
+            mode: "hwpjs-html",
+            pdfPath: hwpJsPdfPath,
+            fromCache: false,
+            runResult: {
+              ok: true,
+              stdout: "",
+              stderr: "",
+              error: ""
+            },
+            analysisMode: "full"
+          });
         }
       }
+      if (hwpJsCandidate) {
+        hwpCandidates.push(hwpJsCandidate);
+      }
+      selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
+    }
+
+    if (selectedCandidate?.available && selectedCandidate.path && fs.existsSync(selectedCandidate.path)) {
+      const selectedMode = selectedCandidate.mode;
+      const selectionWarning = buildHwpSelectionWarning(selectedCandidate, hwpCandidates);
+      logConvertTrace("hwp-select-final", {
+        selectedMode,
+        score: selectedCandidate.score,
+        analysisMode: selectedCandidate.analysis?.analysisMode || "full",
+        source: path.basename(resolved)
+      });
+      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
+      writeHwpSelectionMeta(resolved, {
+        selectedMode,
+        selectedPdfPath: selectedCandidate.path,
+        warningMessage: selectionWarning,
+        fallbackReason: selectionWarning || "",
+        analysisMode: selectedCandidate.analysis?.analysisMode || "full",
+        candidateScores
+      });
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
-        convertMode: "hwp-layout",
-        warningMessage: suspiciousTwoUp ? "책자형 페이지가 감지되어 단면 재변환을 시도했지만 원본 결과로 열었습니다." : "",
-        errorCode: "",
-        pdfPath: hwpLayoutPdfPath,
-        pdfBuffer: await fsp.readFile(hwpLayoutPdfPath)
+        convertMode: selectedMode,
+        warningMessage: selectionWarning,
+        errorCode: selectionWarning ? "RENDER_ARTIFACT_DETECTED" : "",
+        convertDiagnostics: {
+          selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+          selectedMode,
+          analysisMode: selectedCandidate.analysis?.analysisMode || "full",
+          candidateScores,
+          fallbackReason: selectionWarning || ""
+        },
+        sheetMap: [],
+        pdfPath: selectedCandidate.path,
+        pdfBuffer: await fsp.readFile(selectedCandidate.path)
       };
     }
 
-    const hwpJsPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
-    const cachedHwpJs = readCachedPdf(hwpJsPdfPath);
-    if (cachedHwpJs) {
-      return {
-        sourcePath: resolved,
-        sourceExt: ext,
-        converted: true,
-        convertMode: "hwpjs-html",
-        warningMessage: "원본 변환 엔진을 찾지 못해 호환 보기 모드로 열었습니다.",
-        errorCode: "",
-        pdfPath: cachedHwpJs,
-        pdfBuffer: await fsp.readFile(cachedHwpJs)
-      };
-    }
-
-    const hwpJsResult = await convertHwpToPdfWithHwpJs(resolved, hwpJsPdfPath);
-    if (hwpJsResult.ok && fs.existsSync(hwpJsPdfPath)) {
-      return {
-        sourcePath: resolved,
-        sourceExt: ext,
-        converted: true,
-        convertMode: "hwpjs-html",
-        warningMessage: "원본 변환 엔진을 찾지 못해 호환 보기 모드로 열었습니다.",
-        errorCode: "",
-        pdfPath: hwpJsPdfPath,
-        pdfBuffer: await fsp.readFile(hwpJsPdfPath)
-      };
-    }
-
-    const hwpErrorDetail = [hwpResult?.stderr, hwpResult?.error, hwpJsResult?.reason]
+    const hwpErrorDetail = [
+      hwpPrintResult?.stderr,
+      hwpPrintResult?.error,
+      hwpCandidates.find((candidate) => candidate.mode === "hwp-print-pdf")?.runResult?.stderr,
+      hwpSaveAsResult?.stderr,
+      hwpSaveAsResult?.error,
+      hwpCandidates.find((candidate) => candidate.mode === "hwp-saveas")?.runResult?.stderr,
+      hwpJsResult?.reason
+    ]
       .map((value) => String(value || "").trim())
       .find(Boolean);
-    const hwpTimedOut = isTimeoutResult(hwpResult);
-    const hwpSecurityMissing = /hwp_security_module_missing/i.test(String(hwpResult?.stderr || hwpResult?.error || ""));
+    const hwpTimedOut = isTimeoutResult(hwpPrintResult) || isTimeoutResult(hwpSaveAsResult);
+    const hwpSecurityMissing = /hwp_security_module_missing/i.test(
+      `${String(hwpPrintResult?.stderr || "")} ${String(hwpPrintResult?.error || "")} ${String(hwpSaveAsResult?.stderr || "")} ${String(hwpSaveAsResult?.error || "")}`
+    );
+    const hwpRenderArtifact = hwpCandidates.some(
+      (candidate) => candidate.bookletLike
+        || Number(candidate.analysis?.metrics?.overlapLineCount || 0) >= 2
+        || Number(candidate.analysis?.metrics?.rasterLineHitCount || 0) >= 2
+        || Number(candidate.analysis?.metrics?.textLinePierceRatio || 0) >= 0.26
+    );
     const reasonHint = hwpSecurityMissing
       ? "한컴 보안 모듈이 준비되지 않아 텍스트 기반 보기로 전환했습니다."
       : hwpTimedOut
         ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
-        : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+        : hwpRenderArtifact
+          ? "변환 결과에서 비정상 페이지 패턴이 감지되어 텍스트 기반 보기로 전환했습니다."
+          : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
     warningMessage = buildConversionWarning(ext, hwpErrorDetail, reasonHint);
-    errorCode = hwpSecurityMissing ? "ENGINE_MISSING" : hwpTimedOut ? "ENGINE_TIMEOUT" : "CONVERT_FAILED";
+    errorCode = hwpSecurityMissing
+      ? "ENGINE_MISSING"
+      : hwpTimedOut
+        ? "ENGINE_TIMEOUT"
+        : hwpRenderArtifact
+          ? "RENDER_ARTIFACT_DETECTED"
+          : "CONVERT_FAILED";
+    const hwpDiagnosticPayload = {
+      selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+      selectedMode: "fallback",
+      analysisMode: "full",
+      candidateScores: buildHwpCandidateScoreRows(hwpCandidates),
+      fallbackReason: reasonHint
+    };
+    logConvertTrace("hwp-fallback", {
+      errorCode,
+      fallbackReason: reasonHint,
+      source: path.basename(resolved)
+    });
+    const fallbackPdfPath = createConvertedPdfPath(resolved, "fallback");
+    const fallbackCache = readCachedPdf(fallbackPdfPath, { maxAgeMs: FALLBACK_CACHE_TTL_MS });
+    if (fallbackCache) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "fallback",
+        warningMessage,
+        errorCode,
+        convertDiagnostics: hwpDiagnosticPayload,
+        sheetMap: [],
+        pdfPath: fallbackCache,
+        pdfBuffer: await fsp.readFile(fallbackCache)
+      };
+    }
+    const extractedText = await extractDocumentTextForFallback(resolved, ext);
+    const html = buildFallbackHtml({
+      sourcePath: resolved,
+      sourceExt: ext,
+      contentText: extractedText || "",
+      warningMessage
+    });
+    const fallbackPdf = await htmlToPdfBuffer(html);
+    await fsp.writeFile(fallbackPdfPath, fallbackPdf);
+    return {
+      sourcePath: resolved,
+      sourceExt: ext,
+      converted: true,
+      convertMode: "fallback",
+      warningMessage,
+      errorCode,
+      convertDiagnostics: hwpDiagnosticPayload,
+      sheetMap: [],
+      pdfPath: fallbackPdfPath,
+      pdfBuffer: fallbackPdf
+    };
   }
 
   if (ext === ".xls" || ext === ".xlsx") {
@@ -1629,19 +2505,25 @@ async function convertDocumentToPdf(sourcePath) {
         convertMode: "xlsx-html",
         warningMessage: warningMessage || "표 보기 모드로 열었습니다.",
         errorCode: "",
+        convertDiagnostics: {
+          selectedMode: "xlsx-html",
+          candidateScores: [],
+          fallbackReason: warningMessage || ""
+        },
+        sheetMap: readSpreadsheetSheetNames(resolved).map((sheetName) => ({ sheetName, startPage: null, endPage: null })),
         pdfPath: xlsxHtmlCache,
         pdfBuffer: await fsp.readFile(xlsxHtmlCache)
       };
     }
     if (errorCode !== "EMPTY_DOCUMENT") {
       try {
-        const xlsxHtml = buildSpreadsheetFallbackHtml({
+        const xlsxFallback = buildSpreadsheetFallbackHtml({
           sourcePath: resolved,
           sourceExt: ext,
           warningMessage: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다."
         });
-        if (xlsxHtml) {
-          const xlsxPdf = await htmlToPdfBuffer(xlsxHtml);
+        if (xlsxFallback?.html) {
+          const xlsxPdf = await htmlToPdfBuffer(xlsxFallback.html);
           await fsp.writeFile(xlsxHtmlPdfPath, xlsxPdf);
           return {
             sourcePath: resolved,
@@ -1650,6 +2532,12 @@ async function convertDocumentToPdf(sourcePath) {
             convertMode: "xlsx-html",
             warningMessage: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다.",
             errorCode: "",
+            convertDiagnostics: {
+              selectedMode: "xlsx-html",
+              candidateScores: [],
+              fallbackReason: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다."
+            },
+            sheetMap: Array.isArray(xlsxFallback.sheetMap) ? xlsxFallback.sheetMap : [],
             pdfPath: xlsxHtmlPdfPath,
             pdfBuffer: xlsxPdf
           };
@@ -1670,6 +2558,12 @@ async function convertDocumentToPdf(sourcePath) {
       convertMode: "fallback",
       warningMessage,
       errorCode,
+      convertDiagnostics: {
+        selectedMode: "fallback",
+        candidateScores: [],
+        fallbackReason: warningMessage || ""
+      },
+      sheetMap: [],
       pdfPath: fallbackCache,
       pdfBuffer: await fsp.readFile(fallbackCache)
     };
@@ -1693,6 +2587,12 @@ async function convertDocumentToPdf(sourcePath) {
     convertMode: "fallback",
     warningMessage,
     errorCode,
+    convertDiagnostics: {
+      selectedMode: "fallback",
+      candidateScores: [],
+      fallbackReason: warningMessage || ""
+    },
+    sheetMap: [],
     pdfPath: fallbackPdfPath,
     pdfBuffer: fallbackPdf
   };
@@ -1824,6 +2724,11 @@ function createMenu() {
         {
           label: mt("copyDeveloperContact"),
           click: () => sendToRenderer("menu-action", "copy-developer-email")
+        },
+        { type: "separator" },
+        {
+          label: mt("versionInfo"),
+          click: () => sendToRenderer("menu-action", "show-version-info")
         }
       ]
     }
@@ -2210,6 +3115,12 @@ ipcMain.handle("document:open", async (_event, filePath) => {
       convertMode: converted.convertMode,
       warningMessage: converted.warningMessage,
       errorCode: converted.errorCode || "",
+      convertDiagnostics: converted.convertDiagnostics || {
+        selectedMode: converted.convertMode || "fallback",
+        candidateScores: [],
+        fallbackReason: converted.warningMessage || ""
+      },
+      sheetMap: Array.isArray(converted.sheetMap) ? converted.sheetMap : [],
       pdfPath: converted.pdfPath,
       data: converted.pdfBuffer
     };
@@ -2233,6 +3144,12 @@ ipcMain.handle("document:convert", async (_event, filePath) => {
       convertMode: converted.convertMode,
       warningMessage: converted.warningMessage,
       errorCode: converted.errorCode || "",
+      convertDiagnostics: converted.convertDiagnostics || {
+        selectedMode: converted.convertMode || "fallback",
+        candidateScores: [],
+        fallbackReason: converted.warningMessage || ""
+      },
+      sheetMap: Array.isArray(converted.sheetMap) ? converted.sheetMap : [],
       pdfPath: converted.pdfPath
     };
   } catch (error) {
