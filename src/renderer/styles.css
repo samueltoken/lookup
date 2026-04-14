@@ -90,21 +90,18 @@ body {
 }
 
 .ribbon-group {
-  min-height: 62px;
+  min-height: 44px;
   border-right: 1px solid #dbe4f1;
-  padding-right: 8px;
+  padding-right: 6px;
   margin-right: 2px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 5px;
+  justify-content: center;
+  gap: 2px;
 }
 
 .ribbon-group-title {
-  padding-left: 2px;
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
+  display: none;
 }
 
 .toolbar-group {
@@ -159,7 +156,7 @@ body {
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.85;
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -506,7 +503,7 @@ body {
   position: relative;
   min-height: 0;
   overflow: auto;
-  background: #d8dde4;
+  background: #eef2f7;
   overscroll-behavior: contain;
 }
 
@@ -731,7 +728,7 @@ body.fullscreen .workspace {
 }
 
 body.fullscreen .viewer-panel {
-  background: #101722;
+  background: #f2f5fa;
 }
 
 body.fullscreen.fullscreen-single .viewer-panel {

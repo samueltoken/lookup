@@ -6,7 +6,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const crypto = require("node:crypto");
 const https = require("node:https");
-const { spawnSync } = require("node:child_process");
+const { spawnSync, spawn } = require("node:child_process");
 
 let mainWindow = null;
 let pendingDocumentToOpen = null;
@@ -26,6 +26,7 @@ let WordExtractorCtor = null;
 let XLSXMod = null;
 let hwpJsMod = null;
 let readHwpxDocumentFn = null;
+let pdfToPrinterMod = null;
 
 const menuText = {
   ko: {
@@ -176,6 +177,13 @@ function ensureHwpxReader() {
   return readHwpxDocumentFn;
 }
 
+function ensurePdfToPrinter() {
+  if (!pdfToPrinterMod) {
+    pdfToPrinterMod = require("pdf-to-printer");
+  }
+  return pdfToPrinterMod;
+}
+
 function toBuffer(data) {
   if (Buffer.isBuffer(data)) {
     return data;
@@ -270,6 +278,16 @@ async function openSystemPrintDialog(pdfBuffer, suggestedName = "lookup-print.pd
   const outPath = path.join(ensurePrintPreviewDir(), uniqueName);
   await fsp.writeFile(outPath, pdfBuffer);
 
+  try {
+    const { print } = ensurePdfToPrinter();
+    await print(outPath, { printDialog: true });
+    return { ok: true, path: outPath };
+  } catch (_error) {
+    return await openSystemPrintDialogFallback(outPath);
+  }
+}
+
+async function openSystemPrintDialogFallback(pdfPath) {
   const printWindow = new BrowserWindow({
     show: false,
     width: 1100,
@@ -320,13 +338,13 @@ async function openSystemPrintDialog(pdfBuffer, suggestedName = "lookup-print.pd
               finish({ ok: false, message: failureReason || "인쇄 대화상자를 열지 못했습니다." });
               return;
             }
-            finish({ ok: true, path: outPath });
+            finish({ ok: true, path: pdfPath });
           }
         );
       }, 220);
     });
 
-    printWindow.loadURL(pathToFileURL(outPath).toString()).catch((error) => {
+    printWindow.loadURL(pathToFileURL(pdfPath).toString()).catch((error) => {
       clearTimeout(timeoutId);
       finish({ ok: false, message: error?.message || "인쇄 준비 중 오류가 발생했습니다." });
     });
@@ -594,6 +612,12 @@ function classifyDocumentOpenError(error) {
   if (/지원하지 않는 파일 형식|unsupported/i.test(message)) {
     return "UNSUPPORTED_FORMAT";
   }
+  if (/timed out|timeout|시간.*초과|응답.*지연/i.test(message)) {
+    return "CONVERT_TIMEOUT";
+  }
+  if (/libreoffice_missing|engine.*missing|변환 엔진.*찾/i.test(message)) {
+    return "ENGINE_MISSING";
+  }
   if (/변환|convert|hwp|office/i.test(message)) {
     return "CONVERT_FAILED";
   }
@@ -616,6 +640,108 @@ function runPowerShell(script, timeoutMs = 180000) {
     stderr: String(result.stderr || "").trim(),
     error: result.error ? String(result.error.message || result.error) : ""
   };
+}
+
+function runProcess(command, args, timeoutMs = 180000) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      finish({
+        ok: false,
+        status: null,
+        timedOut,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: String(error?.message || error || "process_error")
+      });
+    });
+    child.on("close", (code) => {
+      finish({
+        ok: code === 0 && !timedOut,
+        status: code,
+        timedOut,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: ""
+      });
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch (_error) {
+        // ignore kill errors
+      }
+    }, timeoutMs);
+  });
+}
+
+function findLibreOfficeExecutable() {
+  const knownPaths = [
+    path.join(process.env["ProgramFiles"] || "C:\\Program Files", "LibreOffice", "program", "soffice.exe"),
+    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "LibreOffice", "program", "soffice.exe")
+  ];
+  for (const candidate of knownPaths) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const whereResult = spawnSync("where", ["soffice"], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if (whereResult.status === 0) {
+    const first = String(whereResult.stdout || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (first && fs.existsSync(first)) {
+      return first;
+    }
+  }
+
+  return "";
+}
+
+function isTimeoutResult(result) {
+  if (!result) {
+    return false;
+  }
+  return Boolean(result.timedOut) || /timed out|timeout/i.test(String(result.error || result.stderr || ""));
+}
+
+function buildConversionWarning(sourceExt, engineMessage, hint) {
+  const extLabel = String(sourceExt || "").replace(".", "").toUpperCase();
+  const details = String(engineMessage || "").trim();
+  const reason = hint || "변환 엔진을 사용하지 못해 호환 보기로 전환했습니다.";
+  if (!details) {
+    return `${extLabel} 문서: ${reason}`;
+  }
+  return `${extLabel} 문서: ${reason} (${details.slice(0, 120)})`;
 }
 
 function normalizeText(text) {
@@ -644,7 +770,7 @@ function convertWithWordCom(sourcePath, outputPdfPath) {
     "if (-not (Test-Path " + output + ")) { throw 'word_export_failed' }"
   ].join("; ");
 
-  return runPowerShell(script);
+  return runPowerShell(script, 180000);
 }
 
 function convertWithExcelCom(sourcePath, outputPdfPath) {
@@ -667,12 +793,13 @@ function convertWithExcelCom(sourcePath, outputPdfPath) {
     "if (-not (Test-Path " + output + ")) { throw 'excel_export_failed' }"
   ].join("; ");
 
-  return runPowerShell(script);
+  return runPowerShell(script, 180000);
 }
 
-function convertWithHancomCom(sourcePath, outputPdfPath) {
+function convertWithHancomCom(sourcePath, outputPdfPath, ext = ".hwp") {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
+  const format = ext === ".hwpx" ? "HWPX" : "HWP";
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$hwp = $null",
@@ -680,16 +807,66 @@ function convertWithHancomCom(sourcePath, outputPdfPath) {
     "  $hwp = New-Object -ComObject HWPFrame.HwpObject",
     "  try { $hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') | Out-Null } catch {}",
     "  $hwp.XHwpWindows.Item(0).Visible = $false",
-    "  $opened = $hwp.Open(" + source + ")",
+    "  $opened = $hwp.Open(" + source + ", '" + format + "', 'forceopen:true;versionwarning:false')",
     "  if (-not $opened) { throw 'hwp_open_failed' }",
-    "  $saved = $hwp.SaveAs(" + output + ", 'PDF')",
+    "  $saved = $hwp.SaveAs(" + output + ", 'PDF', '')",
     "  if (-not $saved) { throw 'hwp_save_failed' }",
     "} finally {",
     "  if ($hwp -ne $null) { try { $hwp.Quit() | Out-Null } catch {} }",
     "}",
     "if (-not (Test-Path " + output + ")) { throw 'hwp_export_failed' }"
   ].join("; ");
-  return runPowerShell(script);
+  return runPowerShell(script, 90000);
+}
+
+async function convertWithLibreOffice(sourcePath, outputPdfPath) {
+  const soffice = findLibreOfficeExecutable();
+  if (!soffice) {
+    return {
+      ok: false,
+      missingEngine: true,
+      stderr: "libreoffice_missing"
+    };
+  }
+
+  const outDir = path.dirname(outputPdfPath);
+  const sourceBaseName = path.basename(sourcePath, path.extname(sourcePath));
+  const producedPdfPath = path.join(outDir, `${sourceBaseName}.pdf`);
+  try {
+    if (fs.existsSync(producedPdfPath)) {
+      fs.unlinkSync(producedPdfPath);
+    }
+  } catch (_error) {
+    // ignore cleanup errors
+  }
+
+  const result = await runProcess(
+    soffice,
+    ["--headless", "--invisible", "--nologo", "--nolockcheck", "--norestore", "--convert-to", "pdf", "--outdir", outDir, sourcePath],
+    120000
+  );
+
+  if (!result.ok) {
+    return result;
+  }
+
+  if (!fs.existsSync(producedPdfPath)) {
+    return {
+      ok: false,
+      stderr: "libreoffice_pdf_not_created"
+    };
+  }
+
+  if (path.resolve(producedPdfPath) !== path.resolve(outputPdfPath)) {
+    await fsp.copyFile(producedPdfPath, outputPdfPath);
+  }
+
+  return {
+    ok: true,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    status: result.status
+  };
 }
 
 async function extractWordLegacyText(filePath) {
@@ -845,7 +1022,13 @@ async function convertHwpToPdfWithHwpJs(sourcePath, outputPdfPath) {
   try {
     const hwpjs = ensureHwpJsModule();
     const raw = fs.readFileSync(sourcePath);
-    const htmlRaw = hwpjs.toHtml(raw);
+    const htmlResult = hwpjs.toHtml(raw);
+    const htmlRaw =
+      typeof htmlResult === "string"
+        ? htmlResult
+        : typeof htmlResult?.html === "string"
+          ? htmlResult.html
+          : "";
     const html = normalizeHwpHtmlDocument(htmlRaw, path.basename(sourcePath));
     if (!html) {
       return { ok: false, reason: "hwpjs_html_empty" };
@@ -951,13 +1134,46 @@ async function extractDocumentTextForFallback(filePath, ext) {
 }
 
 async function convertOfficeFileToPdf(sourcePath, outputPdfPath, ext) {
+  let comResult = { ok: false, stderr: "unsupported_office_ext" };
   if (ext === ".doc" || ext === ".docx") {
-    return convertWithWordCom(sourcePath, outputPdfPath);
+    comResult = convertWithWordCom(sourcePath, outputPdfPath);
+  } else if (ext === ".xls" || ext === ".xlsx") {
+    comResult = convertWithExcelCom(sourcePath, outputPdfPath);
   }
-  if (ext === ".xls" || ext === ".xlsx") {
-    return convertWithExcelCom(sourcePath, outputPdfPath);
+
+  if (comResult.ok && fs.existsSync(outputPdfPath)) {
+    return {
+      ok: true,
+      engine: "office-com",
+      warningMessage: ""
+    };
   }
-  return { ok: false, stderr: "unsupported_office_ext" };
+
+  const libreResult = await convertWithLibreOffice(sourcePath, outputPdfPath);
+  if (libreResult.ok && fs.existsSync(outputPdfPath)) {
+    const warningMessage = buildConversionWarning(ext, "", "Office 자동화 변환에 실패해 LibreOffice 엔진으로 열었습니다.");
+    return {
+      ok: true,
+      engine: "libreoffice",
+      warningMessage
+    };
+  }
+
+  const reasonHint = isTimeoutResult(comResult) || isTimeoutResult(libreResult)
+    ? "변환 시간이 초과되어 호환 보기로 전환했습니다."
+    : libreResult.missingEngine
+      ? "Word/Excel 또는 LibreOffice 변환 엔진을 찾지 못해 호환 보기로 전환했습니다."
+      : "고품질 변환에 실패해 호환 보기로 전환했습니다.";
+
+  const details = [comResult?.stderr, comResult?.error, libreResult?.stderr, libreResult?.error]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+
+  return {
+    ok: false,
+    engine: "fallback",
+    warningMessage: buildConversionWarning(ext, details, reasonHint)
+  };
 }
 
 async function convertDocumentToPdf(sourcePath) {
@@ -1009,15 +1225,15 @@ async function convertDocumentToPdf(sourcePath) {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
-        convertMode: "office",
-        warningMessage: "",
+        convertMode: officeResult.engine || "office",
+        warningMessage: officeResult.warningMessage || "",
         pdfPath: targetPdfPath,
         pdfBuffer: await fsp.readFile(targetPdfPath)
       };
     }
-    warningMessage = "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
+    warningMessage = officeResult.warningMessage || "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
   } else if (HWP_EXTENSIONS.has(ext)) {
-    const hwpResult = convertWithHancomCom(resolved, targetPdfPath);
+    const hwpResult = convertWithHancomCom(resolved, targetPdfPath, ext);
     if (hwpResult.ok && fs.existsSync(targetPdfPath)) {
       return {
         sourcePath: resolved,
@@ -1041,7 +1257,13 @@ async function convertDocumentToPdf(sourcePath) {
         pdfBuffer: await fsp.readFile(targetPdfPath)
       };
     }
-    warningMessage = "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+    const hwpErrorDetail = [hwpResult?.stderr, hwpResult?.error, hwpJsResult?.reason]
+      .map((value) => String(value || "").trim())
+      .find(Boolean);
+    const reasonHint = isTimeoutResult(hwpResult)
+      ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
+      : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+    warningMessage = buildConversionWarning(ext, hwpErrorDetail, reasonHint);
   }
 
   const extractedText = await extractDocumentTextForFallback(resolved, ext);
