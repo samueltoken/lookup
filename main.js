@@ -16,6 +16,7 @@ let pendingDocumentToOpen = null;
 let updateConfig = null;
 let updateDownloaded = false;
 let updateTargetVersion = "";
+let updateInstallTriggered = false;
 let appSettings = { language: "ko" };
 
 const menuText = {
@@ -948,8 +949,10 @@ function setupAutoUpdater() {
 
   updateDownloaded = false;
   updateTargetVersion = "";
+  updateInstallTriggered = false;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoRunAppAfterInstall = true;
   if (!app.isPackaged) {
     autoUpdater.forceDevUpdateConfig = true;
   }
@@ -991,6 +994,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on("update-downloaded", (info) => {
     updateDownloaded = true;
+    updateInstallTriggered = false;
     updateTargetVersion = String(info?.version || updateTargetVersion || "");
     sendUpdateStatus("downloaded", {
       stage: "ready-to-install",
@@ -1000,16 +1004,43 @@ function setupAutoUpdater() {
     });
 
     if (app.isPackaged) {
+      const triggerInstall = () => {
+        if (updateInstallTriggered) {
+          return;
+        }
+        try {
+          sendUpdateStatus("installing", {
+            stage: "installing",
+            targetVersion: updateTargetVersion,
+            percent: 100,
+            message: "앱을 다시 시작해 업데이트를 설치합니다..."
+          });
+          autoUpdater.quitAndInstall(false, true);
+          updateInstallTriggered = true;
+        } catch (error) {
+          updateInstallTriggered = false;
+          sendUpdateStatus("error", {
+            stage: "error",
+            message: `업데이트 재시작 설치 실패: ${error?.message || "알 수 없는 오류"}`
+          });
+        }
+      };
+      setTimeout(triggerInstall, 1200);
       setTimeout(() => {
-        sendUpdateStatus("installing", {
-          stage: "installing",
-          targetVersion: updateTargetVersion,
-          percent: 100,
-          message: "앱을 다시 시작해 업데이트를 설치합니다..."
-        });
-        autoUpdater.quitAndInstall(true, true);
-      }, 1200);
+        if (!updateInstallTriggered) {
+          triggerInstall();
+        }
+      }, 4200);
     }
+  });
+
+  autoUpdater.on("before-quit-for-update", () => {
+    sendUpdateStatus("installing", {
+      stage: "installing",
+      targetVersion: updateTargetVersion,
+      percent: 100,
+      message: "업데이트 설치를 위해 앱을 종료합니다..."
+    });
   });
 
   autoUpdater.on("error", (error) => {

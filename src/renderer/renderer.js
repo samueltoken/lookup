@@ -1,6 +1,7 @@
 ﻿
 import * as pdfjsLib from "../../node_modules/pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument, StandardFonts, degrees, rgb } from "../../node_modules/pdf-lib/dist/pdf-lib.esm.js";
+import { createWorker } from "../../node_modules/tesseract.js/dist/tesseract.esm.min.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "../../node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
@@ -48,6 +49,8 @@ const i18n = {
     modeHighlight: "형광펜",
     modePen: "펜",
     modeText: "텍스트 메모",
+    undo: "되돌리기",
+    redo: "다시하기",
     thumbToggleShow: "미리보기 표시",
     thumbToggleHide: "미리보기 숨기기",
     searchPanelToggleShow: "검색 패널 표시",
@@ -80,7 +83,15 @@ const i18n = {
     updateChecking: "업데이트를 확인하고 있습니다...",
     printPreparing: "인쇄 미리보기를 준비하고 있습니다...",
     printOpened: "인쇄 미리보기를 열었습니다.",
-    printFailed: "인쇄 미리보기를 열지 못했습니다."
+    printFailed: "인쇄 미리보기를 열지 못했습니다.",
+    ocrSearching: "이미지 문서에서 글자를 찾고 있습니다...",
+    ocrFailed: "OCR 인식에 실패해 텍스트 검색만 사용합니다.",
+    textMemoHint: "메모 입력",
+    textMemoAdd: "추가",
+    textMemoCancel: "취소",
+    textMemoAdded: "텍스트 메모를 추가했습니다.",
+    undoDone: "되돌리기 완료",
+    redoDone: "다시하기 완료"
   },
   en: {
     open: "Open",
@@ -96,6 +107,8 @@ const i18n = {
     modeHighlight: "Highlight",
     modePen: "Pen",
     modeText: "Text Note",
+    undo: "Undo",
+    redo: "Redo",
     thumbToggleShow: "Show Thumbnails",
     thumbToggleHide: "Hide Thumbnails",
     searchPanelToggleShow: "Show Search Panel",
@@ -128,7 +141,15 @@ const i18n = {
     updateChecking: "Checking for updates...",
     printPreparing: "Preparing print preview...",
     printOpened: "Print preview opened.",
-    printFailed: "Unable to open print preview."
+    printFailed: "Unable to open print preview.",
+    ocrSearching: "Scanning image pages with OCR...",
+    ocrFailed: "OCR failed. Using text-layer search only.",
+    textMemoHint: "Enter memo",
+    textMemoAdd: "Add",
+    textMemoCancel: "Cancel",
+    textMemoAdded: "Text memo added.",
+    undoDone: "Undo complete",
+    redoDone: "Redo complete"
   }
 };
 
@@ -153,6 +174,12 @@ const state = {
   annotations: new Map(),
   textItemsCache: new Map(),
   searchPageCache: new Map(),
+  ocrWordCache: new Map(),
+  ocrPagePromises: new Map(),
+  ocrWorker: null,
+  ocrWorkerPromise: null,
+  ocrWorkerReady: false,
+  ocrErrorShown: false,
   scale: 1,
   currentPage: 1,
   editingMode: "view",
@@ -191,7 +218,13 @@ const state = {
   applyingLanguage: false,
   pendingZoomJob: null,
   zoomJobRunning: false,
-  viewerRenderRecoveryCount: 0
+  viewerRenderRecoveryCount: 0,
+  thumbRerenderTimer: 0,
+  historyPast: [],
+  historyFuture: [],
+  historyRestoring: false,
+  historyLimit: 120,
+  pendingTextMemo: null
 };
 
 const els = {
@@ -212,6 +245,8 @@ const els = {
   rotateRightBtn: document.getElementById("rotateRightBtn"),
   deletePageBtn: document.getElementById("deletePageBtn"),
   editModeButtons: Array.from(document.querySelectorAll(".mode")),
+  undoBtn: document.getElementById("undoBtn"),
+  redoBtn: document.getElementById("redoBtn"),
   searchInput: document.getElementById("searchInput"),
   searchBtn: document.getElementById("searchBtn"),
   searchPrevBtn: document.getElementById("searchPrevBtn"),
@@ -240,7 +275,11 @@ const els = {
   targetVersionLabel: document.getElementById("targetVersionLabel"),
   updateProgressWrap: document.getElementById("updateProgressWrap"),
   updateProgressBar: document.getElementById("updateProgressBar"),
-  updateProgressText: document.getElementById("updateProgressText")
+  updateProgressText: document.getElementById("updateProgressText"),
+  textMemoEditor: document.getElementById("textMemoEditor"),
+  textMemoInput: document.getElementById("textMemoInput"),
+  textMemoAddBtn: document.getElementById("textMemoAddBtn"),
+  textMemoCancelBtn: document.getElementById("textMemoCancelBtn")
 };
 
 function toUint8Array(raw) {
@@ -262,6 +301,109 @@ function toUint8Array(raw) {
 function setStatus(message, isError = false) {
   els.statusText.textContent = message;
   els.statusText.style.color = isError ? "#d73333" : "";
+}
+
+function cloneAnnotationBucket(bucket) {
+  return {
+    highlights: (bucket?.highlights || []).map((item) => ({ ...item })),
+    pens: (bucket?.pens || []).map((pen) => ({
+      color: pen.color,
+      width: pen.width,
+      points: (pen.points || []).map((point) => ({ ...point }))
+    })),
+    texts: (bucket?.texts || []).map((note) => ({ ...note }))
+  };
+}
+
+function createHistorySnapshot() {
+  return {
+    pageOrder: [...state.pageOrder],
+    pageRotations: Array.from(state.pageRotations.entries()).map(([pageNum, rotation]) => [Number(pageNum), rotation]),
+    annotations: Array.from(state.annotations.entries()).map(([pageNum, bucket]) => [Number(pageNum), cloneAnnotationBucket(bucket)]),
+    currentPage: state.currentPage
+  };
+}
+
+function updateHistoryButtons() {
+  if (!els.undoBtn || !els.redoBtn) {
+    return;
+  }
+  els.undoBtn.disabled = !state.pdfDoc || state.historyPast.length === 0;
+  els.redoBtn.disabled = !state.pdfDoc || state.historyFuture.length === 0;
+}
+
+function clearHistory() {
+  state.historyPast = [];
+  state.historyFuture = [];
+  updateHistoryButtons();
+}
+
+function pushHistorySnapshot() {
+  if (!state.pdfDoc || state.historyRestoring) {
+    return;
+  }
+  state.historyPast.push(createHistorySnapshot());
+  if (state.historyPast.length > state.historyLimit) {
+    state.historyPast.shift();
+  }
+  state.historyFuture = [];
+  updateHistoryButtons();
+}
+
+async function restoreHistorySnapshot(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  state.historyRestoring = true;
+  try {
+    state.pageOrder = Array.isArray(snapshot.pageOrder) ? [...snapshot.pageOrder] : [];
+    state.pageRotations = new Map((snapshot.pageRotations || []).map(([pageNum, rotation]) => [Number(pageNum), rotation]));
+    state.annotations = new Map(
+      (snapshot.annotations || []).map(([pageNum, bucket]) => [Number(pageNum), cloneAnnotationBucket(bucket)])
+    );
+    state.currentPage = Number(snapshot.currentPage || state.currentPage || 1);
+    state.pageCache.clear();
+    state.textItemsCache.clear();
+    state.searchPageCache.clear();
+    state.ocrWordCache.clear();
+    ensureCurrentPageExists();
+    await rebuildPageViews();
+    await renderThumbnails();
+    updatePageBadges();
+    await goToPage(state.currentPage, false);
+    if (state.searchQuery) {
+      await performSearch(state.searchQuery, false);
+    } else {
+      clearSearchState();
+    }
+    state.saveDirty = true;
+    updateToolbarState();
+  } finally {
+    state.historyRestoring = false;
+    updateHistoryButtons();
+  }
+}
+
+async function undoLastAction() {
+  if (!state.pdfDoc || state.historyPast.length === 0) {
+    return;
+  }
+  const current = createHistorySnapshot();
+  const previous = state.historyPast.pop();
+  state.historyFuture.push(current);
+  await restoreHistorySnapshot(previous);
+  setStatus(t("undoDone"));
+}
+
+async function redoLastAction() {
+  if (!state.pdfDoc || state.historyFuture.length === 0) {
+    return;
+  }
+  const current = createHistorySnapshot();
+  const next = state.historyFuture.pop();
+  state.historyPast.push(current);
+  await restoreHistorySnapshot(next);
+  setStatus(t("redoDone"));
 }
 
 function applyLanguageToStaticTexts() {
@@ -289,6 +431,23 @@ function applyLanguageToStaticTexts() {
       const label = state.language === "en" ? "Print" : "인쇄";
       els.printBtn.setAttribute("aria-label", label);
       els.printBtn.setAttribute("title", `${label} (Ctrl+P)`);
+    }
+    if (els.undoBtn) {
+      els.undoBtn.setAttribute("aria-label", t("undo"));
+      els.undoBtn.setAttribute("title", `${t("undo")} (Ctrl+Z)`);
+    }
+    if (els.redoBtn) {
+      els.redoBtn.setAttribute("aria-label", t("redo"));
+      els.redoBtn.setAttribute("title", `${t("redo")} (Ctrl+Y)`);
+    }
+    if (els.textMemoInput) {
+      els.textMemoInput.setAttribute("placeholder", t("textMemoHint"));
+    }
+    if (els.textMemoAddBtn) {
+      els.textMemoAddBtn.textContent = t("textMemoAdd");
+    }
+    if (els.textMemoCancelBtn) {
+      els.textMemoCancelBtn.textContent = t("textMemoCancel");
     }
     updateSearchCountText();
     updateVersionLabels();
@@ -485,6 +644,7 @@ function updateFullscreenButtons() {
   els.toggleFullscreenBtn.textContent = state.isFullScreen ? t("fullscreenExit") : t("fullscreen");
   els.toggleFullscreenViewModeBtn.textContent =
     state.fullScreenViewMode === "single" ? t("fullscreenModeSingle") : t("fullscreenModeContinuous");
+  document.body.classList.toggle("fullscreen-single", isSinglePageFullscreen());
 }
 
 function applyPageVisibility() {
@@ -516,12 +676,19 @@ function updateToolbarState() {
   els.searchInput.disabled = !hasDoc;
   els.searchPrevBtn.disabled = !hasDoc || state.searchMatches.length <= 1;
   els.searchNextBtn.disabled = !hasDoc || state.searchMatches.length <= 1;
+  if (els.undoBtn) {
+    els.undoBtn.disabled = !hasDoc || state.historyPast.length === 0;
+  }
+  if (els.redoBtn) {
+    els.redoBtn.disabled = !hasDoc || state.historyFuture.length === 0;
+  }
 
   els.pageCountLabel.textContent = `/ ${hasDoc ? total : 0}`;
   els.pageInput.value = `${hasDoc ? Math.max(1, currentIndex + 1) : 1}`;
   els.zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
 
   updateFullscreenButtons();
+  updateHistoryButtons();
 }
 
 function updateActiveThumbnail() {
@@ -560,6 +727,7 @@ function clearSearchState() {
   state.searchQuery = "";
   state.searchMatches = [];
   state.perPageMatchIndexes = new Map();
+  state.searchPageCache = new Map();
   state.activeSearchIndex = -1;
   els.searchResultList.innerHTML = "";
   updateSearchCountText();
@@ -762,7 +930,8 @@ async function renderAllPages(options = {}) {
 async function renderThumbnail(pageNum, thumbCanvas) {
   const page = await getPdfPage(pageNum);
   const viewport = page.getViewport({ scale: 1, rotation: getRotation(pageNum) });
-  const targetWidth = 170;
+  const panelWidth = Math.max(120, els.thumbnailList.clientWidth || state.leftPanelWidth - 20);
+  const targetWidth = clamp(panelWidth - 8, 120, 860);
   const thumbScale = targetWidth / viewport.width;
   const scaledViewport = page.getViewport({ scale: thumbScale, rotation: getRotation(pageNum) });
   const dpr = window.devicePixelRatio || 1;
@@ -792,6 +961,30 @@ async function renderThumbnail(pageNum, thumbCanvas) {
       transform: renderScale === 1 ? null : [renderScale, 0, 0, renderScale, 0, 0]
     }).promise;
   }
+}
+
+function queueThumbnailRerender() {
+  if (state.thumbRerenderTimer) {
+    clearTimeout(state.thumbRerenderTimer);
+  }
+  state.thumbRerenderTimer = setTimeout(async () => {
+    state.thumbRerenderTimer = 0;
+    if (!state.pdfDoc || !state.thumbnails.size) {
+      return;
+    }
+    const version = ++state.thumbRenderVersion;
+    for (const pageNum of state.pageOrder) {
+      if (version !== state.thumbRenderVersion) {
+        return;
+      }
+      const thumb = state.thumbnails.get(pageNum);
+      const canvas = thumb?.querySelector("canvas");
+      if (!canvas) {
+        continue;
+      }
+      await renderThumbnail(pageNum, canvas);
+    }
+  }, 120);
 }
 
 async function renderThumbnails() {
@@ -912,7 +1105,9 @@ function alignCurrentPageToViewerCenter() {
   if (!view) {
     return;
   }
+  const top = Math.max(0, view.wrap.offsetTop + view.wrap.offsetHeight / 2 - els.viewerPanel.clientHeight / 2);
   const left = Math.max(0, view.wrap.offsetLeft + view.wrap.offsetWidth / 2 - els.viewerPanel.clientWidth / 2);
+  els.viewerPanel.scrollTop = top;
   els.viewerPanel.scrollLeft = left;
 }
 
@@ -1058,18 +1253,33 @@ function queueLayoutRecoveryRender(options = {}) {
 }
 
 function itemRectInViewport(item, viewport) {
-  const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-  const fontHeight = Math.max(8, Math.hypot(tx[2], tx[3]));
-  let width = item.width * tx[0];
-  if (!Number.isFinite(width) || Math.abs(width) < 4) {
-    width = Math.max(8, item.str.length * fontHeight * 0.45);
+  if (item?.isOcr) {
+    return {
+      left: (item.leftRatio || 0) * viewport.width,
+      top: (item.topRatio || 0) * viewport.height,
+      width: Math.max(2, (item.widthRatio || 0) * viewport.width),
+      height: Math.max(2, (item.heightRatio || 0) * viewport.height)
+    };
   }
-  const left = width < 0 ? tx[4] + width : tx[4];
+  const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+  const baseX = Math.max(0.0001, Math.hypot(item.transform?.[0] || 0, item.transform?.[1] || 0));
+  const baseY = Math.max(0.0001, Math.hypot(item.transform?.[2] || 0, item.transform?.[3] || 0));
+  const scaledX = Math.max(0.0001, Math.hypot(tx[0], tx[1]));
+  const scaledY = Math.max(0.0001, Math.hypot(tx[2], tx[3]));
+  const widthScale = scaledX / baseX;
+  const heightScale = scaledY / baseY;
+  const measuredWidth = Number(item.width || 0) * widthScale;
+  const measuredHeight = Number(item.height || 0) * heightScale;
+  const width = Number.isFinite(measuredWidth) && measuredWidth > 0
+    ? measuredWidth
+    : Math.max(8, item.str.length * Math.max(8, measuredHeight || 12) * 0.5);
+  const fontHeight = Math.max(8, Number.isFinite(measuredHeight) && measuredHeight > 0 ? measuredHeight : scaledY);
+  const left = tx[4];
   const top = tx[5] - fontHeight;
   return {
     left,
     top,
-    width: Math.max(4, Math.abs(width)),
+    width: Math.max(4, width),
     height: fontHeight
   };
 }
@@ -1097,7 +1307,7 @@ function drawSearchHighlightsForPage(pageNum) {
 
   view.searchOverlay.innerHTML = "";
   const matchIndexes = state.perPageMatchIndexes.get(pageNum) || [];
-  const items = state.textItemsCache.get(pageNum) || [];
+  const items = state.searchPageCache.get(pageNum) || state.textItemsCache.get(pageNum) || state.ocrWordCache.get(pageNum) || [];
 
   for (const matchIndex of matchIndexes) {
     const match = state.searchMatches[matchIndex];
@@ -1254,6 +1464,54 @@ function applyAnnotationInteractivity() {
   }
 }
 
+function closeTextMemoEditor() {
+  if (!els.textMemoEditor || !els.textMemoInput) {
+    return;
+  }
+  els.textMemoEditor.classList.add("hidden");
+  els.textMemoInput.value = "";
+  state.pendingTextMemo = null;
+}
+
+function openTextMemoEditor(pageNum, clientX, clientY, startPoint) {
+  if (!els.textMemoEditor || !els.textMemoInput || !els.textMemoAddBtn) {
+    return;
+  }
+  const panelRect = els.viewerPanel.getBoundingClientRect();
+  const maxLeft = Math.max(20, els.viewerPanel.scrollWidth - 320);
+  const maxTop = Math.max(20, els.viewerPanel.scrollHeight - 140);
+  const left = clamp(clientX - panelRect.left + els.viewerPanel.scrollLeft, 12, maxLeft);
+  const top = clamp(clientY - panelRect.top + els.viewerPanel.scrollTop, 12, maxTop);
+  els.textMemoEditor.style.left = `${left}px`;
+  els.textMemoEditor.style.top = `${top}px`;
+  els.textMemoEditor.classList.remove("hidden");
+  state.pendingTextMemo = { pageNum, x: startPoint.x, y: startPoint.y };
+  els.textMemoInput.value = "";
+  els.textMemoInput.focus();
+  els.textMemoInput.select();
+}
+
+function commitTextMemoFromEditor() {
+  const pending = state.pendingTextMemo;
+  if (!pending || !els.textMemoInput) {
+    closeTextMemoEditor();
+    return;
+  }
+  const text = String(els.textMemoInput.value || "").trim();
+  if (!text) {
+    closeTextMemoEditor();
+    return;
+  }
+  pushHistorySnapshot();
+  const bucket = getAnnotationBucket(pending.pageNum);
+  bucket.texts.push({ x: pending.x, y: pending.y, text });
+  state.saveDirty = true;
+  drawAnnotationsForPage(pending.pageNum);
+  closeTextMemoEditor();
+  updateToolbarState();
+  setStatus(t("textMemoAdded"));
+}
+
 function bindAnnotationEvents(pageNum, annotationCanvas) {
   annotationCanvas.addEventListener("pointerdown", (event) => {
     if (state.editingMode === "view" || !state.pdfDoc) {
@@ -1271,15 +1529,7 @@ function bindAnnotationEvents(pageNum, annotationCanvas) {
     }
 
     if (state.editingMode === "text") {
-      const text = window.prompt("메모 내용을 입력하세요.", "");
-      if (!text || !text.trim()) {
-        return;
-      }
-      const bucket = getAnnotationBucket(pageNum);
-      bucket.texts.push({ x: startPoint.x, y: startPoint.y, text: text.trim() });
-      state.saveDirty = true;
-      drawAnnotationsForPage(pageNum);
-      setStatus("텍스트 메모를 추가했습니다.");
+      openTextMemoEditor(pageNum, event.clientX, event.clientY, startPoint);
       return;
     }
 
@@ -1319,6 +1569,7 @@ function bindAnnotationEvents(pageNum, annotationCanvas) {
 
     const bucket = getAnnotationBucket(pageNum);
     if (drawing.type === "highlight" && drawing.points.length >= 2) {
+      pushHistorySnapshot();
       const first = drawing.points[0];
       const last = drawing.points[drawing.points.length - 1];
       bucket.highlights.push({
@@ -1329,6 +1580,7 @@ function bindAnnotationEvents(pageNum, annotationCanvas) {
       });
       state.saveDirty = true;
     } else if (drawing.type === "pen" && drawing.points.length >= 2) {
+      pushHistorySnapshot();
       bucket.pens.push({
         points: drawing.points.map((point) => ({ x: point.x, y: point.y })),
         color: "#ff5252",
@@ -1362,16 +1614,123 @@ async function ensureTextItems(pageNum) {
     items.push({
       index: items.length,
       str: displayText,
+      isOcr: false,
       lower: lowered,
       searchable,
       searchableLength: searchable.length,
-      width: item.width || 0,
-      transform: item.transform
+      width: Number(item.width || 0),
+      height: Number(item.height || 0),
+      transform: Array.isArray(item.transform) ? [...item.transform] : [1, 0, 0, 1, 0, 0]
     });
   }
 
   state.textItemsCache.set(pageNum, items);
   return items;
+}
+
+async function ensureOcrWorker() {
+  if (state.ocrWorkerReady && state.ocrWorker) {
+    return state.ocrWorker;
+  }
+  if (state.ocrWorkerPromise) {
+    return state.ocrWorkerPromise;
+  }
+  state.ocrWorkerPromise = (async () => {
+    try {
+      const worker = await createWorker("kor+eng");
+      state.ocrWorker = worker;
+      state.ocrWorkerReady = true;
+      return worker;
+    } catch (_error) {
+      const worker = await createWorker("eng");
+      state.ocrWorker = worker;
+      state.ocrWorkerReady = true;
+      return worker;
+    }
+  })();
+  try {
+    return await state.ocrWorkerPromise;
+  } finally {
+    state.ocrWorkerPromise = null;
+  }
+}
+
+async function ensureOcrItems(pageNum) {
+  if (state.ocrWordCache.has(pageNum)) {
+    return state.ocrWordCache.get(pageNum);
+  }
+  if (state.ocrPagePromises.has(pageNum)) {
+    return state.ocrPagePromises.get(pageNum);
+  }
+  const promise = (async () => {
+    const page = await getPdfPage(pageNum);
+    const baseViewport = page.getViewport({ scale: 1, rotation: getRotation(pageNum) });
+    const longerEdge = Math.max(baseViewport.width, baseViewport.height);
+    const rasterScale = clamp(2100 / Math.max(1, longerEdge), 1, 3);
+    const rasterViewport = page.getViewport({ scale: rasterScale, rotation: getRotation(pageNum) });
+    const rasterCanvas = document.createElement("canvas");
+    rasterCanvas.width = Math.max(1, Math.round(rasterViewport.width));
+    rasterCanvas.height = Math.max(1, Math.round(rasterViewport.height));
+    const rasterContext = rasterCanvas.getContext("2d", { alpha: false });
+    rasterContext.imageSmoothingEnabled = true;
+    rasterContext.imageSmoothingQuality = "high";
+    await page.render({ canvasContext: rasterContext, viewport: rasterViewport }).promise;
+
+    const worker = await ensureOcrWorker();
+    const ocrResult = await worker.recognize(rasterCanvas);
+    const words = Array.isArray(ocrResult?.data?.words) ? ocrResult.data.words : [];
+    const items = [];
+    for (const word of words) {
+      const raw = String(word?.text || "").replace(/\s+/g, " ").trim();
+      if (!raw) {
+        continue;
+      }
+      const lower = raw.toLowerCase();
+      const x0 = Number(word?.bbox?.x0 ?? word?.bbox?.xMin ?? 0);
+      const y0 = Number(word?.bbox?.y0 ?? word?.bbox?.yMin ?? 0);
+      const x1 = Number(word?.bbox?.x1 ?? word?.bbox?.xMax ?? 0);
+      const y1 = Number(word?.bbox?.y1 ?? word?.bbox?.yMax ?? 0);
+      const left = clamp(Math.min(x0, x1) / Math.max(1, rasterViewport.width), 0, 1);
+      const top = clamp(Math.min(y0, y1) / Math.max(1, rasterViewport.height), 0, 1);
+      const width = clamp(Math.abs(x1 - x0) / Math.max(1, rasterViewport.width), 0.001, 1);
+      const height = clamp(Math.abs(y1 - y0) / Math.max(1, rasterViewport.height), 0.001, 1);
+      items.push({
+        index: items.length,
+        isOcr: true,
+        str: raw,
+        lower,
+        searchable: lower,
+        searchableLength: lower.length,
+        leftRatio: left,
+        topRatio: top,
+        widthRatio: width,
+        heightRatio: height
+      });
+    }
+    state.ocrWordCache.set(pageNum, items);
+    return items;
+  })()
+    .catch((error) => {
+      if (!state.ocrErrorShown) {
+        state.ocrErrorShown = true;
+        setStatus(`${t("ocrFailed")} (${error?.message || "OCR"})`, true);
+      }
+      state.ocrWordCache.set(pageNum, []);
+      return [];
+    })
+    .finally(() => {
+      state.ocrPagePromises.delete(pageNum);
+    });
+  state.ocrPagePromises.set(pageNum, promise);
+  return promise;
+}
+
+function shouldUseOcrFallback(textItems) {
+  if (!Array.isArray(textItems) || textItems.length === 0) {
+    return true;
+  }
+  const charCount = textItems.reduce((sum, item) => sum + Number(item.searchableLength || 0), 0);
+  return charCount < 8;
 }
 
 function buildSearchPreview(items, hitItemIndexes) {
@@ -1382,7 +1741,7 @@ function buildSearchPreview(items, hitItemIndexes) {
   const endIndex = Math.min(items.length - 1, hitItemIndexes[hitItemIndexes.length - 1] + 2);
   const raw = items
     .slice(startIndex, endIndex + 1)
-    .map((item) => item.str)
+    .map((item) => String(item.str || "").replace(/\s+/g, " ").trim())
     .join(" ");
   return raw.length <= 120 ? raw : `${raw.slice(0, 117)}...`;
 }
@@ -1436,7 +1795,7 @@ async function scrollActiveMatchToCenter(match) {
     return;
   }
   const firstSegment = match.segments[0];
-  const items = state.textItemsCache.get(match.pageNum) || [];
+  const items = state.searchPageCache.get(match.pageNum) || state.textItemsCache.get(match.pageNum) || state.ocrWordCache.get(match.pageNum) || [];
   const item = items[firstSegment.itemIndex];
   if (!item) {
     return;
@@ -1453,6 +1812,7 @@ async function performSearch(rawQuery, jumpFirst = true) {
   state.searchQuery = query;
   state.searchMatches = [];
   state.perPageMatchIndexes = new Map();
+  state.searchPageCache = new Map();
   state.activeSearchIndex = -1;
 
   if (!queryNeedle) {
@@ -1467,8 +1827,17 @@ async function performSearch(rawQuery, jumpFirst = true) {
   }
 
   setStatus(state.language === "en" ? "Searching..." : "검색 중...");
+  let ocrUsed = false;
   for (const pageNum of state.pageOrder) {
-    const items = await ensureTextItems(pageNum);
+    let items = await ensureTextItems(pageNum);
+    if (shouldUseOcrFallback(items)) {
+      ocrUsed = true;
+      if (!state.ocrWordCache.has(pageNum)) {
+        setStatus(t("ocrSearching"));
+      }
+      items = await ensureOcrItems(pageNum);
+    }
+    state.searchPageCache.set(pageNum, items);
     if (!items.length) {
       continue;
     }
@@ -1524,6 +1893,15 @@ async function performSearch(rawQuery, jumpFirst = true) {
     return;
   }
 
+  if (!state.isFullScreen) {
+    state.searchPanelVisible = true;
+    applyPanelLayout();
+    persistLayoutState();
+  }
+  if (ocrUsed) {
+    setStatus(state.language === "en" ? `Found ${state.searchMatches.length} result(s).` : `${state.searchMatches.length}개 결과를 찾았습니다.`);
+  }
+
   if (jumpFirst) {
     await activateSearchResult(0, true);
   } else {
@@ -1552,6 +1930,7 @@ async function movePageOrder(draggedPageNum, targetPageNum) {
     return;
   }
 
+  pushHistorySnapshot();
   state.pageOrder.splice(fromIndex, 1);
   state.pageOrder.splice(toIndex, 0, draggedPageNum);
   state.saveDirty = true;
@@ -1574,6 +1953,7 @@ async function deleteCurrentPage() {
   if (removeIndex < 0) {
     return;
   }
+  pushHistorySnapshot();
   const removedPageNum = state.pageOrder[removeIndex];
   state.pageOrder.splice(removeIndex, 1);
   state.pageRotations.delete(removedPageNum);
@@ -1602,6 +1982,7 @@ async function rotateCurrentPage(delta) {
   }
   const current = getRotation(state.currentPage);
   const next = (current + delta + 360) % 360;
+  pushHistorySnapshot();
   state.pageRotations.set(state.currentPage, next);
   state.saveDirty = true;
   await renderPage(state.currentPage);
@@ -1955,12 +2336,17 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.annotations.clear();
   state.textItemsCache.clear();
   state.searchPageCache.clear();
+  state.ocrWordCache.clear();
+  state.ocrPagePromises.clear();
+  state.ocrErrorShown = false;
   clearSearchState();
   state.scale = 1;
   setZoomMode("fit");
   state.fullScreenAutoFitDone = false;
   state.currentPage = 1;
   state.saveDirty = false;
+  clearHistory();
+  closeTextMemoEditor();
   await syncWindowTitle(filePath || "");
 
   els.emptyHint.classList.add("hidden");
@@ -2018,8 +2404,16 @@ function toggleLeftPanelVisibility() {
   }
   applyPanelLayout();
   persistLayoutState();
+  if (getEffectiveLeftPanelVisible()) {
+    queueThumbnailRerender();
+  }
+  const forceFit = state.isFullScreen && (isSinglePageFullscreen() || state.zoomMode !== "manual");
+  if (forceFit) {
+    setZoomMode("fit");
+    state.fullScreenAutoFitDone = false;
+  }
   queueLayoutRecoveryRender({
-    forceFit: state.isFullScreen && state.zoomMode !== "manual"
+    forceFit
   });
 }
 
@@ -2066,6 +2460,9 @@ function handlePanelResizeStart(side, startEvent) {
       }
     }
     applyPanelLayout();
+    if (side === "left") {
+      queueThumbnailRerender();
+    }
   };
 
   const onFinish = (event) => {
@@ -2076,6 +2473,9 @@ function handlePanelResizeStart(side, startEvent) {
     window.removeEventListener("pointerup", onFinish);
     window.removeEventListener("pointercancel", onFinish);
     persistLayoutState();
+    if (side === "left") {
+      queueThumbnailRerender();
+    }
     queueLayoutRecoveryRender({
       forceFit: state.isFullScreen && side === "left" && state.zoomMode !== "manual"
     });
@@ -2101,6 +2501,9 @@ function handleWindowResize() {
   }
   resizeDebounceTimer = setTimeout(() => {
     resizeDebounceTimer = 0;
+    if (getEffectiveLeftPanelVisible()) {
+      queueThumbnailRerender();
+    }
     queueLayoutRecoveryRender({ preserveZoom: state.isFullScreen && state.zoomMode === "manual" });
   }, 80);
 }
@@ -2149,6 +2552,12 @@ function bindToolbarActions() {
   els.editModeButtons.forEach((button) => {
     button.addEventListener("click", () => setEditingMode(button.dataset.mode));
   });
+  if (els.undoBtn) {
+    els.undoBtn.addEventListener("click", () => undoLastAction().catch(() => {}));
+  }
+  if (els.redoBtn) {
+    els.redoBtn.addEventListener("click", () => redoLastAction().catch(() => {}));
+  }
 
   els.searchBtn.addEventListener("click", () => performSearch(els.searchInput.value, true).catch(() => {}));
   els.searchPrevBtn.addEventListener("click", () => searchNext(-1).catch(() => {}));
@@ -2179,6 +2588,23 @@ function bindToolbarActions() {
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
     toggleLeftPanelVisibility();
   });
+  if (els.textMemoAddBtn) {
+    els.textMemoAddBtn.addEventListener("click", () => commitTextMemoFromEditor());
+  }
+  if (els.textMemoCancelBtn) {
+    els.textMemoCancelBtn.addEventListener("click", () => closeTextMemoEditor());
+  }
+  if (els.textMemoInput) {
+    els.textMemoInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitTextMemoFromEditor();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeTextMemoEditor();
+      }
+    });
+  }
 }
 
 function bindWindowActions() {
@@ -2211,6 +2637,21 @@ function bindWindowActions() {
     const isTypingTarget =
       active &&
       (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable === true);
+    if (event.key === "Escape" && state.pendingTextMemo) {
+      event.preventDefault();
+      closeTextMemoEditor();
+      return;
+    }
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "z" && !isTypingTarget) {
+      event.preventDefault();
+      await undoLastAction();
+      return;
+    }
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "y" && !isTypingTarget) {
+      event.preventDefault();
+      await redoLastAction();
+      return;
+    }
     if (event.ctrlKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       els.searchInput.focus();
@@ -2280,6 +2721,14 @@ function bindWindowActions() {
       if (!isTypingTarget) {
         await deleteCurrentPage();
       }
+    }
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (state.ocrWorker) {
+      Promise.resolve(state.ocrWorker.terminate()).catch(() => {});
+      state.ocrWorker = null;
+      state.ocrWorkerReady = false;
     }
   });
 }

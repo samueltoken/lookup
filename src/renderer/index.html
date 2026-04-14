@@ -43,6 +43,12 @@
           <button id="editHighlightBtn" class="action mode" data-mode="highlight" data-i18n="modeHighlight">형광펜</button>
           <button id="editPenBtn" class="action mode" data-mode="pen" data-i18n="modePen">펜</button>
           <button id="editTextBtn" class="action mode" data-mode="text" data-i18n="modeText">텍스트 메모</button>
+          <button id="undoBtn" class="action icon-button" aria-label="되돌리기" title="되돌리기 (Ctrl+Z)">
+            <span class="button-icon" aria-hidden="true">↶</span>
+          </button>
+          <button id="redoBtn" class="action icon-button" aria-label="다시하기" title="다시하기 (Ctrl+Y)">
+            <span class="button-icon" aria-hidden="true">↷</span>
+          </button>
         </div>
 
         <div class="toolbar-group">
@@ -81,6 +87,19 @@
             <p data-i18n="dropHint">문서를 끌어놓거나 열기 버튼을 눌러 주세요.</p>
           </div>
           <div id="pagesContainer" class="pages-container"></div>
+          <div id="textMemoEditor" class="text-memo-editor hidden">
+            <input
+              id="textMemoInput"
+              class="text-memo-input"
+              type="text"
+              data-i18n-placeholder="textMemoHint"
+              placeholder="메모 입력"
+            />
+            <div class="text-memo-actions">
+              <button id="textMemoAddBtn" class="action primary" data-i18n="textMemoAdd">추가</button>
+              <button id="textMemoCancelBtn" class="action" data-i18n="textMemoCancel">취소</button>
+            </div>
+          </div>
 
           <div id="fullscreenMiniBar" class="fullscreen-mini hidden">
             <button id="toggleFullscreenViewModeBtn" class="action" data-i18n="fullscreenModeContinuous">
