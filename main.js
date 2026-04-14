@@ -17,6 +17,7 @@ let updateBusy = false;
 let appSettings = { language: "ko" };
 let pendingInstalledUpdate = null;
 let updateReleaseNotes = [];
+let updateReleaseNotesRaw = "";
 let updateReleaseNotesFetchPromise = null;
 
 let officeParserFn = null;
@@ -295,10 +296,9 @@ function normalizeReleaseNotesLines(releaseNotes) {
   return result;
 }
 
-function extractReleaseNotes(info) {
-  const releaseNotes = info?.releaseNotes;
+function extractReleaseNotesRawText(releaseNotes) {
   if (Array.isArray(releaseNotes)) {
-    const noteText = releaseNotes
+    return releaseNotes
       .map((entry) => {
         if (typeof entry === "string") {
           return entry;
@@ -308,22 +308,37 @@ function extractReleaseNotes(info) {
         }
         return String(entry.note || entry.releaseNotes || "").trim();
       })
-      .join("\n");
-    return normalizeReleaseNotesLines(noteText);
+      .filter(Boolean)
+      .join("\n\n");
   }
   if (typeof releaseNotes === "string") {
-    return normalizeReleaseNotesLines(releaseNotes);
+    return releaseNotes;
   }
   if (releaseNotes && typeof releaseNotes === "object") {
-    return normalizeReleaseNotesLines(releaseNotes.note || releaseNotes.releaseNotes || "");
+    return String(releaseNotes.note || releaseNotes.releaseNotes || "");
   }
-  return [];
+  return "";
+}
+
+function setUpdateReleaseNotes(rawReleaseNotes) {
+  const rawText = String(rawReleaseNotes || "").replace(/\uFEFF/g, "").trim();
+  if (!rawText) {
+    return false;
+  }
+  updateReleaseNotesRaw = rawText;
+  updateReleaseNotes = normalizeReleaseNotesLines(rawText);
+  return true;
+}
+
+function extractReleaseNotes(info) {
+  const releaseNotes = info?.releaseNotes;
+  return extractReleaseNotesRawText(releaseNotes);
 }
 
 function rememberReleaseNotes(info) {
-  const notes = extractReleaseNotes(info);
-  if (notes.length > 0) {
-    updateReleaseNotes = notes;
+  const rawNotes = extractReleaseNotes(info);
+  if (rawNotes.trim()) {
+    setUpdateReleaseNotes(rawNotes);
   }
 }
 
@@ -378,7 +393,7 @@ function requestJsonFromGitHubApi(apiPath) {
 
 async function fetchReleaseNotesFromGitHub(versionText = "") {
   if (!updateConfig?.owner || !updateConfig?.repo) {
-    return [];
+    return "";
   }
   const owner = encodeURIComponent(updateConfig.owner);
   const repo = encodeURIComponent(updateConfig.repo);
@@ -395,30 +410,37 @@ async function fetchReleaseNotesFromGitHub(versionText = "") {
 
   for (const tag of tagCandidates) {
     const release = await requestJsonFromGitHubApi(`/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`);
-    const lines = normalizeReleaseNotesLines(release?.body || "");
+    const rawBody = String(release?.body || "");
+    const lines = normalizeReleaseNotesLines(rawBody);
     if (lines.length > 0) {
-      return lines;
+      return rawBody;
     }
   }
 
   const latestRelease = await requestJsonFromGitHubApi(`/repos/${owner}/${repo}/releases/latest`);
-  return normalizeReleaseNotesLines(latestRelease?.body || "");
+  return String(latestRelease?.body || "");
 }
 
 function ensureUpdateReleaseNotes(versionText = "") {
-  if (updateReleaseNotes.length > 0) {
-    return Promise.resolve(updateReleaseNotes);
+  if (updateReleaseNotesRaw.trim()) {
+    return Promise.resolve({
+      raw: updateReleaseNotesRaw,
+      lines: updateReleaseNotes
+    });
   }
   if (updateReleaseNotesFetchPromise) {
     return updateReleaseNotesFetchPromise;
   }
 
   updateReleaseNotesFetchPromise = (async () => {
-    const fetched = await fetchReleaseNotesFromGitHub(versionText);
-    if (fetched.length > 0) {
-      updateReleaseNotes = fetched;
+    const fetchedRaw = await fetchReleaseNotesFromGitHub(versionText);
+    if (String(fetchedRaw || "").trim()) {
+      setUpdateReleaseNotes(fetchedRaw);
     }
-    return updateReleaseNotes;
+    return {
+      raw: updateReleaseNotesRaw,
+      lines: updateReleaseNotes
+    };
   })().finally(() => {
     updateReleaseNotesFetchPromise = null;
   });
@@ -426,11 +448,14 @@ function ensureUpdateReleaseNotes(versionText = "") {
   return updateReleaseNotesFetchPromise;
 }
 
-function markInstalledVersion(version, releaseNotes = []) {
+function markInstalledVersion(version, releaseNotes = "") {
   try {
+    const rawNotes = extractReleaseNotesRawText(releaseNotes) || String(releaseNotes || "");
+    const plainNotes = normalizeReleaseNotesLines(rawNotes);
     const marker = {
       version: String(version || "").trim(),
-      releaseNotes: normalizeReleaseNotesLines(releaseNotes),
+      releaseNotesRaw: rawNotes,
+      releaseNotesPlain: plainNotes,
       time: new Date().toISOString()
     };
     fs.mkdirSync(path.dirname(getUpdateMarkerFilePath()), { recursive: true });
@@ -454,7 +479,10 @@ function consumeInstalledVersionMarker() {
     }
     return {
       version,
-      releaseNotes: normalizeReleaseNotesLines(parsed?.releaseNotes || "")
+      releaseNotesRaw: extractReleaseNotesRawText(parsed?.releaseNotesRaw || parsed?.releaseNotes || ""),
+      releaseNotes: Array.isArray(parsed?.releaseNotesPlain) && parsed.releaseNotesPlain.length
+        ? normalizeReleaseNotesLines(parsed.releaseNotesPlain)
+        : normalizeReleaseNotesLines(parsed?.releaseNotesRaw || parsed?.releaseNotes || "")
     };
   } catch (_error) {
     return null;
@@ -1132,17 +1160,22 @@ function createWindow() {
     }
     sendToRenderer("window-fullscreen-changed", mainWindow?.isFullScreen() ?? false);
     if (pendingInstalledUpdate?.version) {
-      if (!Array.isArray(pendingInstalledUpdate.releaseNotes) || pendingInstalledUpdate.releaseNotes.length === 0) {
+      if (
+        (!Array.isArray(pendingInstalledUpdate.releaseNotes) || pendingInstalledUpdate.releaseNotes.length === 0) &&
+        !String(pendingInstalledUpdate.releaseNotesRaw || "").trim()
+      ) {
         updateConfig = updateConfig || loadUpdateConfig();
-        const fetchedNotes = await fetchReleaseNotesFromGitHub(pendingInstalledUpdate.version);
-        if (fetchedNotes.length > 0) {
-          pendingInstalledUpdate.releaseNotes = fetchedNotes;
+        const fetchedNotesRaw = await fetchReleaseNotesFromGitHub(pendingInstalledUpdate.version);
+        if (String(fetchedNotesRaw || "").trim()) {
+          pendingInstalledUpdate.releaseNotesRaw = fetchedNotesRaw;
+          pendingInstalledUpdate.releaseNotes = normalizeReleaseNotesLines(fetchedNotesRaw);
         }
       }
       sendUpdateStatus("installed", {
         stage: "installed",
         targetVersion: pendingInstalledUpdate.version,
         releaseNotes: Array.isArray(pendingInstalledUpdate.releaseNotes) ? pendingInstalledUpdate.releaseNotes : [],
+        releaseNotesRaw: String(pendingInstalledUpdate.releaseNotesRaw || ""),
         message: `업데이트 완료(v${pendingInstalledUpdate.version})`
       });
       pendingInstalledUpdate = null;
@@ -1246,6 +1279,7 @@ function setupAutoUpdater() {
   updateTargetVersion = "";
   updateInstallTriggered = false;
   updateReleaseNotes = [];
+  updateReleaseNotesRaw = "";
   updateReleaseNotesFetchPromise = null;
   setUpdateBusy(false);
   autoUpdater.autoDownload = true;
@@ -1275,17 +1309,19 @@ function setupAutoUpdater() {
       targetVersion: updateTargetVersion,
       percent: 0,
       releaseNotes: updateReleaseNotes,
+      releaseNotesRaw: updateReleaseNotesRaw,
       message: `새 버전 v${updateTargetVersion}을 찾았습니다. 업데이트 중입니다.`
     });
-    void ensureUpdateReleaseNotes(updateTargetVersion).then((notes) => {
-      if (!notes.length) {
+    void ensureUpdateReleaseNotes(updateTargetVersion).then((notesPayload) => {
+      if (!notesPayload.lines.length) {
         return;
       }
       sendUpdateStatus("available", {
         stage: "downloading",
         targetVersion: updateTargetVersion,
         percent: 0,
-        releaseNotes: notes,
+        releaseNotes: notesPayload.lines,
+        releaseNotesRaw: notesPayload.raw,
         message: `새 버전 v${updateTargetVersion}을 찾았습니다. 업데이트 중입니다.`
       });
     });
@@ -1294,6 +1330,7 @@ function setupAutoUpdater() {
   autoUpdater.on("update-not-available", () => {
     updateTargetVersion = "";
     updateReleaseNotes = [];
+    updateReleaseNotesRaw = "";
     updateReleaseNotesFetchPromise = null;
     setUpdateBusy(false);
     sendUpdateStatus("not-available", { stage: "idle", percent: 100, message: "현재 최신 버전입니다." });
@@ -1306,6 +1343,7 @@ function setupAutoUpdater() {
       stage: "downloading",
       targetVersion: updateTargetVersion,
       releaseNotes: updateReleaseNotes,
+      releaseNotesRaw: updateReleaseNotesRaw,
       message: `업데이트 중입니다... ${Math.round(percent)}%`,
       percent
     });
@@ -1321,6 +1359,7 @@ function setupAutoUpdater() {
       stage: "ready-to-install",
       targetVersion: updateTargetVersion,
       releaseNotes: updateReleaseNotes,
+      releaseNotesRaw: updateReleaseNotesRaw,
       percent: 100,
       message: `업데이트 중입니다. v${updateTargetVersion} 설치를 준비합니다.`
     });
@@ -1338,11 +1377,12 @@ function setupAutoUpdater() {
               new Promise((resolve) => setTimeout(resolve, 1800))
             ]);
           }
-          markInstalledVersion(updateTargetVersion || app.getVersion(), updateReleaseNotes);
+          markInstalledVersion(updateTargetVersion || app.getVersion(), updateReleaseNotesRaw || updateReleaseNotes);
           sendUpdateStatus("installing", {
             stage: "restarting",
             targetVersion: updateTargetVersion,
             releaseNotes: updateReleaseNotes,
+            releaseNotesRaw: updateReleaseNotesRaw,
             percent: 100,
             message: "업데이트 중입니다. 앱을 다시 시작합니다..."
           });
@@ -1374,6 +1414,7 @@ function setupAutoUpdater() {
       stage: "restarting",
       targetVersion: updateTargetVersion,
       releaseNotes: updateReleaseNotes,
+      releaseNotesRaw: updateReleaseNotesRaw,
       percent: 100,
       message: "업데이트 중입니다. 설치를 계속합니다..."
     });
@@ -1587,6 +1628,7 @@ ipcMain.handle("update:check", async () => {
   try {
     setUpdateBusy(true);
     updateReleaseNotes = [];
+    updateReleaseNotesRaw = "";
     updateTargetVersion = "";
     await autoUpdater.checkForUpdates();
     return { ok: true };

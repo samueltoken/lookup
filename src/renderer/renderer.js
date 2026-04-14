@@ -81,12 +81,20 @@ const i18n = {
     redo: "다시하기",
     thumbToggleShow: "미리보기 표시",
     thumbToggleHide: "미리보기 숨기기",
+    thumbToggleShowTip: "미리보기 패널 표시",
+    thumbToggleHideTip: "미리보기 패널 숨기기",
     searchPanelToggleShow: "검색 패널 표시",
     searchPanelToggleHide: "검색 패널 숨기기",
+    searchPanelToggleShowTip: "검색 패널 표시",
+    searchPanelToggleHideTip: "검색 패널 숨기기",
     fullscreen: "전체화면",
     fullscreenExit: "전체화면 종료",
+    fullscreenTip: "전체화면 켜기",
+    fullscreenExitTip: "전체화면 끄기",
     darkMode: "다크모드",
     lightMode: "라이트모드",
+    darkModeTip: "다크모드 켜기",
+    lightModeTip: "라이트모드 켜기",
     searchPlaceholder: "문서 검색",
     search: "검색",
     prevHit: "이전 결과",
@@ -174,12 +182,20 @@ const i18n = {
     redo: "Redo",
     thumbToggleShow: "Show Thumbnails",
     thumbToggleHide: "Hide Thumbnails",
+    thumbToggleShowTip: "Show thumbnail panel",
+    thumbToggleHideTip: "Hide thumbnail panel",
     searchPanelToggleShow: "Show Search Panel",
     searchPanelToggleHide: "Hide Search Panel",
+    searchPanelToggleShowTip: "Show search panel",
+    searchPanelToggleHideTip: "Hide search panel",
     fullscreen: "Fullscreen",
     fullscreenExit: "Exit Fullscreen",
+    fullscreenTip: "Enter fullscreen",
+    fullscreenExitTip: "Exit fullscreen",
     darkMode: "Dark Mode",
     lightMode: "Light Mode",
+    darkModeTip: "Enable dark mode",
+    lightModeTip: "Enable light mode",
     searchPlaceholder: "Search document",
     search: "Search",
     prevHit: "Prev Hit",
@@ -766,12 +782,58 @@ function getAnnotationBucket(pageNum) {
 
 function setDarkMode(enabled) {
   document.body.classList.toggle("dark", enabled);
-  els.toggleDarkBtn.textContent = enabled ? t("lightMode") : t("darkMode");
+  updateViewActionButtons();
   localStorage.setItem(storage.darkMode, enabled ? "1" : "0");
 }
 
 function applySavedDarkMode() {
   setDarkMode(localStorage.getItem(storage.darkMode) === "1");
+}
+
+function setIconButtonVisual(button, iconText, labelText) {
+  if (!button) {
+    return;
+  }
+  const iconEl = button.querySelector(".button-icon");
+  if (iconEl) {
+    iconEl.textContent = iconText;
+  } else {
+    button.textContent = iconText;
+  }
+  button.setAttribute("aria-label", labelText);
+  button.setAttribute("title", labelText);
+}
+
+function updateViewActionButtons() {
+  const leftVisible = getEffectiveLeftPanelVisible();
+  const rightVisible = getEffectiveRightPanelVisible();
+  const darkEnabled = document.body.classList.contains("dark");
+
+  setIconButtonVisual(
+    els.toggleThumbPanelBtn,
+    leftVisible ? "🗂" : "📑",
+    leftVisible ? t("thumbToggleHideTip") : t("thumbToggleShowTip")
+  );
+  setIconButtonVisual(
+    els.toggleSearchPanelBtn,
+    rightVisible ? "🧾" : "🔎",
+    rightVisible ? t("searchPanelToggleHideTip") : t("searchPanelToggleShowTip")
+  );
+  setIconButtonVisual(
+    els.toggleThumbInFullscreenBtn,
+    leftVisible ? "🗂" : "📑",
+    leftVisible ? t("thumbToggleHideTip") : t("thumbToggleShowTip")
+  );
+  setIconButtonVisual(
+    els.toggleFullscreenBtn,
+    state.isFullScreen ? "🗗" : "⛶",
+    state.isFullScreen ? t("fullscreenExitTip") : t("fullscreenTip")
+  );
+  setIconButtonVisual(
+    els.toggleDarkBtn,
+    darkEnabled ? "☀" : "🌙",
+    darkEnabled ? t("lightModeTip") : t("darkModeTip")
+  );
 }
 
 function persistLayoutState() {
@@ -816,10 +878,12 @@ function applyPanelLayout() {
   els.leftResizer.classList.toggle("hidden", !leftVisible);
   els.searchPanel.classList.toggle("hidden", !rightVisible);
   els.rightResizer.classList.toggle("hidden", !rightVisible);
-
-  els.toggleThumbPanelBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
-  els.toggleSearchPanelBtn.textContent = rightVisible ? t("searchPanelToggleHide") : t("searchPanelToggleShow");
-  els.toggleThumbInFullscreenBtn.textContent = leftVisible ? t("thumbToggleHide") : t("thumbToggleShow");
+  if (!isSinglePageFullscreen()) {
+    for (const view of state.pageViews.values()) {
+      view.wrap.classList.remove("hidden-page");
+    }
+  }
+  updateViewActionButtons();
 }
 
 function normalizeUpdateStage(stage) {
@@ -981,7 +1045,7 @@ function parseReleaseNotesTree(releaseNotes) {
 
   for (const rawLine of rawLines) {
     const trimmed = rawLine.trim();
-    const headingMatch = trimmed.match(/^#{2,6}\s+(.+)$/);
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.+)$/);
     if (headingMatch) {
       ensureSection(headingMatch[1]);
       lastTopItem = null;
@@ -998,13 +1062,18 @@ function parseReleaseNotesTree(releaseNotes) {
 
     const indentSize = rawLine.match(/^\s*/)?.[0].length || 0;
     const listMatch = trimmed.match(/^([-*•]|\d+[.)])\s+(.+)$/);
+    if (!listMatch && indentSize === 0 && /[:：]\s*$/.test(trimmed) && candidateTitle.length <= 48) {
+      ensureSection(candidateTitle);
+      lastTopItem = null;
+      continue;
+    }
     if (listMatch) {
       const text = cleanReleaseNoteLineText(listMatch[2]);
       if (!text) {
         continue;
       }
       const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
-      const depth = indentSize >= 2 ? 1 : 0;
+      const depth = Math.max(0, Math.floor(indentSize / 2));
       if (depth > 0 && lastTopItem) {
         const childKey = `${section.title.toLowerCase()}::child::${text.toLowerCase()}`;
         if (!seenItems.has(childKey)) {
@@ -1073,6 +1142,7 @@ function showUpdateNotesModal(version, releaseNotes) {
   } else {
     for (const section of sections) {
       const sectionWrap = document.createElement("section");
+      sectionWrap.className = "update-notes-section";
       const heading = document.createElement("h3");
       heading.className = "update-notes-section-title";
       heading.textContent = section.title;
@@ -1105,10 +1175,10 @@ function showUpdateNotesModal(version, releaseNotes) {
 }
 
 function updateFullscreenButtons() {
-  els.toggleFullscreenBtn.textContent = state.isFullScreen ? t("fullscreenExit") : t("fullscreen");
   els.toggleFullscreenViewModeBtn.textContent =
     state.fullScreenViewMode === "single" ? t("fullscreenModeSingle") : t("fullscreenModeContinuous");
   document.body.classList.toggle("fullscreen-single", isSinglePageFullscreen());
+  updateViewActionButtons();
 }
 
 function applyPageVisibility() {
@@ -1633,6 +1703,9 @@ async function goToPage(pageNum, smooth = false) {
   if (!view) {
     return;
   }
+  if (!isSinglePageFullscreen()) {
+    view.wrap.classList.remove("hidden-page");
+  }
   const scrollTop = Math.max(0, view.wrap.offsetTop + view.wrap.offsetHeight / 2 - els.viewerPanel.clientHeight / 2);
   const maxScrollLeft = Math.max(0, els.viewerPanel.scrollWidth - els.viewerPanel.clientWidth);
   const scrollLeft = clamp(
@@ -1658,7 +1731,8 @@ function alignCurrentPageToViewerCenter() {
     return;
   }
   const top = Math.max(0, view.wrap.offsetTop + view.wrap.offsetHeight / 2 - els.viewerPanel.clientHeight / 2);
-  const left = Math.max(0, view.wrap.offsetLeft + view.wrap.offsetWidth / 2 - els.viewerPanel.clientWidth / 2);
+  const maxScrollLeft = Math.max(0, els.viewerPanel.scrollWidth - els.viewerPanel.clientWidth);
+  const left = clamp(view.wrap.offsetLeft + view.wrap.offsetWidth / 2 - els.viewerPanel.clientWidth / 2, 0, maxScrollLeft);
   els.viewerPanel.scrollTop = top;
   els.viewerPanel.scrollLeft = left;
 }
@@ -1727,8 +1801,29 @@ function focusViewerPanel() {
   }
 }
 
-function viewerSizeIsValid() {
-  return els.viewerPanel.clientWidth > 80 && els.viewerPanel.clientHeight > 80;
+function viewerSizeIsValid(minWidth = 120, minHeight = 120) {
+  return els.viewerPanel.clientWidth >= minWidth && els.viewerPanel.clientHeight >= minHeight;
+}
+
+async function waitForStableViewerSize(minWidth = 120, minHeight = 120, maxAttempts = 8) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    if (viewerSizeIsValid(minWidth, minHeight)) {
+      return true;
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  return viewerSizeIsValid(minWidth, minHeight);
+}
+
+function clearHiddenPagesOutsideSingleFullscreen() {
+  if (isSinglePageFullscreen()) {
+    ensureCurrentPageVisibleInSingleMode();
+    return;
+  }
+  for (const view of state.pageViews.values()) {
+    view.wrap.classList.remove("hidden-page");
+  }
 }
 
 function countPagesIntersectingViewer(requireRendered = false) {
@@ -1772,6 +1867,7 @@ async function ensureViewerPageVisible() {
   if (!state.pdfDoc || !state.pageOrder.length) {
     return;
   }
+  clearHiddenPagesOutsideSingleFullscreen();
   if (countPagesIntersectingViewer(true) > 0) {
     return;
   }
@@ -1780,6 +1876,9 @@ async function ensureViewerPageVisible() {
   const currentView = state.pageViews.get(state.currentPage);
   if (currentView) {
     currentView.wrap.classList.remove("hidden-page");
+    if (currentView.wrap.offsetWidth < 10 || currentView.wrap.offsetHeight < 10) {
+      await renderPage(state.currentPage);
+    }
   }
   if (state.currentPage) {
     await renderPage(state.currentPage);
@@ -1819,7 +1918,10 @@ async function ensureViewerPageVisible() {
 
 async function fitCurrentPageToViewport() {
   if (!state.pdfDoc || !state.currentPage) {
-    return;
+    return false;
+  }
+  if (!viewerSizeIsValid(260, 220)) {
+    return false;
   }
   const page = await getPdfPage(state.currentPage);
   const baseViewport = page.getViewport({ scale: 1, rotation: getEffectivePageRotation(page, state.currentPage) });
@@ -1828,8 +1930,12 @@ async function fitCurrentPageToViewport() {
   const fitWidthScale = maxWidth / Math.max(1, baseViewport.width);
   const fitHeightScale = maxHeight / Math.max(1, baseViewport.height);
   const nextScale = state.fullScreenViewMode === "single" ? Math.min(fitWidthScale, fitHeightScale) : fitWidthScale;
+  if (!Number.isFinite(nextScale) || nextScale <= 0) {
+    return false;
+  }
   await zoomTo(clamp(nextScale, 0.25, 6), null, { prioritizeVisible: true, zoomMode: "fit" });
   state.fullScreenAutoFitDone = true;
+  return true;
 }
 
 function shouldApplyFullscreenFit(options = {}) {
@@ -1856,7 +1962,7 @@ function queueLayoutRecoveryRender(options = {}) {
       return;
     }
     ensureCurrentPageExists();
-    if (!viewerSizeIsValid()) {
+    if (!(await waitForStableViewerSize(120, 120, 6))) {
       if (attempt < 5) {
         setTimeout(() => {
           queueLayoutRecoveryRender({ ...options, attempt: attempt + 1 });
@@ -1873,13 +1979,19 @@ function queueLayoutRecoveryRender(options = {}) {
       ensureCurrentPageExists();
     }
     applyPageVisibility();
-    ensureCurrentPageVisibleInSingleMode();
+    clearHiddenPagesOutsideSingleFullscreen();
     if (state.currentPage && state.pageViews.has(state.currentPage)) {
       await renderPage(state.currentPage);
     }
     await goToPage(state.currentPage, false);
     if (shouldApplyFullscreenFit(options)) {
-      await fitCurrentPageToViewport();
+      const fitApplied = await fitCurrentPageToViewport();
+      if (!fitApplied && attempt < 5) {
+        setTimeout(() => {
+          queueLayoutRecoveryRender({ ...options, attempt: attempt + 1, forceFit: true });
+        }, 120);
+        return;
+      }
       await goToPage(state.currentPage, false);
     } else if (isSinglePageFullscreen()) {
       alignCurrentPageToViewerCenter();
@@ -1891,6 +2003,11 @@ function queueLayoutRecoveryRender(options = {}) {
     await ensureViewerPageVisible();
     if (state.isFullScreen) {
       focusViewerPanel();
+    }
+    if (countPagesIntersectingViewer(true) === 0 && attempt < 4) {
+      setTimeout(() => {
+        queueLayoutRecoveryRender({ ...options, attempt: attempt + 1, forceFit: state.isFullScreen || options.forceFit });
+      }, 90);
     }
   };
   requestAnimationFrame(() => {
@@ -3659,7 +3776,9 @@ function bindMainProcessEvents() {
       setStatus(payload.message, payload.status === "error");
     }
     if (normalizedStage === "installed") {
-      showUpdateNotesModal(payload.targetVersion || state.appVersion, payload.releaseNotes || []);
+      const releaseNotesSource =
+        String(payload.releaseNotesRaw || "").trim().length > 0 ? payload.releaseNotesRaw : payload.releaseNotes || [];
+      showUpdateNotesModal(payload.targetVersion || state.appVersion, releaseNotesSource);
     }
   });
 }

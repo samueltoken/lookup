@@ -1,5 +1,10 @@
 ﻿!include "LogicLib.nsh"
 
+!macro customHeader
+  Caption "lookup v${VERSION} 업데이트"
+  BrandingText "lookup v${VERSION} 업데이트"
+!macroend
+
 
 !ifndef BUILD_UNINSTALLER
   !macro customInstall
@@ -84,4 +89,5 @@
     DeleteRegValue HKCU "Software\Classes\.xlsx\OpenWithProgids" "lookup.XLSX"
   !macroend
 !endif
+
 
