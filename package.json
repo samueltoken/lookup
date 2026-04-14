@@ -1,6 +1,6 @@
 {
   "name": "lookup",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
@@ -123,6 +123,7 @@
     },
     "nsis": {
       "oneClick": true,
+      "warningsAsErrors": false,
       "allowToChangeInstallationDirectory": false,
       "runAfterFinish": true,
       "createDesktopShortcut": false,

@@ -14,7 +14,8 @@ let updateTargetVersion = "";
 let updateInstallTriggered = false;
 let updateBusy = false;
 let appSettings = { language: "ko" };
-let pendingInstalledVersion = "";
+let pendingInstalledUpdate = null;
+let updateReleaseNotes = [];
 
 let officeParserFn = null;
 let WordExtractorCtor = null;
@@ -261,10 +262,52 @@ function getUpdateMarkerFilePath() {
   return path.join(app.getPath("userData"), "last-installed-update.json");
 }
 
-function markInstalledVersion(version) {
+function normalizeReleaseNotesLines(releaseNotes) {
+  const raw = Array.isArray(releaseNotes) ? releaseNotes.join("\n") : String(releaseNotes || "");
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[\s\-*•\d.)]+/, "").trim())
+    .filter(Boolean);
+  return lines.slice(0, 80);
+}
+
+function extractReleaseNotes(info) {
+  const releaseNotes = info?.releaseNotes;
+  if (Array.isArray(releaseNotes)) {
+    const noteText = releaseNotes
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return entry;
+        }
+        if (!entry || typeof entry !== "object") {
+          return "";
+        }
+        return String(entry.note || entry.releaseNotes || "").trim();
+      })
+      .join("\n");
+    return normalizeReleaseNotesLines(noteText);
+  }
+  if (typeof releaseNotes === "string") {
+    return normalizeReleaseNotesLines(releaseNotes);
+  }
+  if (releaseNotes && typeof releaseNotes === "object") {
+    return normalizeReleaseNotesLines(releaseNotes.note || releaseNotes.releaseNotes || "");
+  }
+  return [];
+}
+
+function rememberReleaseNotes(info) {
+  const notes = extractReleaseNotes(info);
+  if (notes.length > 0) {
+    updateReleaseNotes = notes;
+  }
+}
+
+function markInstalledVersion(version, releaseNotes = []) {
   try {
     const marker = {
       version: String(version || "").trim(),
+      releaseNotes: normalizeReleaseNotesLines(releaseNotes),
       time: new Date().toISOString()
     };
     fs.mkdirSync(path.dirname(getUpdateMarkerFilePath()), { recursive: true });
@@ -278,13 +321,20 @@ function consumeInstalledVersionMarker() {
   try {
     const markerPath = getUpdateMarkerFilePath();
     if (!fs.existsSync(markerPath)) {
-      return "";
+      return null;
     }
     const parsed = JSON.parse(fs.readFileSync(markerPath, "utf8"));
     fs.unlinkSync(markerPath);
-    return String(parsed?.version || "").trim();
+    const version = String(parsed?.version || "").trim();
+    if (!version) {
+      return null;
+    }
+    return {
+      version,
+      releaseNotes: normalizeReleaseNotesLines(parsed?.releaseNotes || "")
+    };
   } catch (_error) {
-    return "";
+    return null;
   }
 }
 
@@ -958,13 +1008,14 @@ function createWindow() {
       pendingDocumentToOpen = null;
     }
     sendToRenderer("window-fullscreen-changed", mainWindow?.isFullScreen() ?? false);
-    if (pendingInstalledVersion) {
+    if (pendingInstalledUpdate?.version) {
       sendUpdateStatus("installed", {
         stage: "installed",
-        targetVersion: pendingInstalledVersion,
-        message: `업데이트 설치 완료: v${pendingInstalledVersion}`
+        targetVersion: pendingInstalledUpdate.version,
+        releaseNotes: Array.isArray(pendingInstalledUpdate.releaseNotes) ? pendingInstalledUpdate.releaseNotes : [],
+        message: `업데이트 완료(v${pendingInstalledUpdate.version})`
       });
-      pendingInstalledVersion = "";
+      pendingInstalledUpdate = null;
     }
   });
 
@@ -1064,6 +1115,7 @@ function setupAutoUpdater() {
   updateDownloaded = false;
   updateTargetVersion = "";
   updateInstallTriggered = false;
+  updateReleaseNotes = [];
   setUpdateBusy(false);
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -1085,17 +1137,20 @@ function setupAutoUpdater() {
 
   autoUpdater.on("update-available", (info) => {
     updateTargetVersion = String(info?.version || "");
+    rememberReleaseNotes(info);
     setUpdateBusy(true);
     sendUpdateStatus("available", {
       stage: "downloading",
       targetVersion: updateTargetVersion,
       percent: 0,
-      message: `새 버전 v${updateTargetVersion}을 찾았습니다. 다운로드를 시작합니다.`
+      releaseNotes: updateReleaseNotes,
+      message: `새 버전 v${updateTargetVersion}을 찾았습니다. 업데이트 중입니다.`
     });
   });
 
   autoUpdater.on("update-not-available", () => {
     updateTargetVersion = "";
+    updateReleaseNotes = [];
     setUpdateBusy(false);
     sendUpdateStatus("not-available", { stage: "idle", percent: 100, message: "현재 최신 버전입니다." });
   });
@@ -1106,7 +1161,8 @@ function setupAutoUpdater() {
     sendUpdateStatus("downloading", {
       stage: "downloading",
       targetVersion: updateTargetVersion,
-      message: `업데이트 다운로드중... ${Math.round(percent)}%`,
+      releaseNotes: updateReleaseNotes,
+      message: `업데이트 중입니다... ${Math.round(percent)}%`,
       percent
     });
   });
@@ -1115,12 +1171,14 @@ function setupAutoUpdater() {
     updateDownloaded = true;
     updateInstallTriggered = false;
     updateTargetVersion = String(info?.version || updateTargetVersion || "");
+    rememberReleaseNotes(info);
     setUpdateBusy(true);
     sendUpdateStatus("downloaded", {
       stage: "ready-to-install",
       targetVersion: updateTargetVersion,
+      releaseNotes: updateReleaseNotes,
       percent: 100,
-      message: `업데이트 v${updateTargetVersion} 다운로드 완료. 설치를 준비합니다.`
+      message: `업데이트 중입니다. v${updateTargetVersion} 설치를 준비합니다.`
     });
 
     if (app.isPackaged) {
@@ -1130,15 +1188,16 @@ function setupAutoUpdater() {
         }
         try {
           updateInstallTriggered = true;
-          markInstalledVersion(updateTargetVersion || app.getVersion());
+          markInstalledVersion(updateTargetVersion || app.getVersion(), updateReleaseNotes);
           sendUpdateStatus("installing", {
             stage: "restarting",
             targetVersion: updateTargetVersion,
+            releaseNotes: updateReleaseNotes,
             percent: 100,
-            message: "업데이트 설치를 위해 즉시 재시작합니다..."
+            message: "업데이트 중입니다. 앱을 다시 시작합니다..."
           });
           setUpdateBusy(true);
-          autoUpdater.quitAndInstall(true, true);
+          autoUpdater.quitAndInstall(false, true);
         } catch (error) {
           updateInstallTriggered = false;
           setUpdateBusy(false);
@@ -1162,8 +1221,9 @@ function setupAutoUpdater() {
     sendUpdateStatus("installing", {
       stage: "restarting",
       targetVersion: updateTargetVersion,
+      releaseNotes: updateReleaseNotes,
       percent: 100,
-      message: "업데이트 설치를 위해 앱을 종료합니다..."
+      message: "업데이트 중입니다. 설치를 계속합니다..."
     });
   });
 
@@ -1373,6 +1433,8 @@ ipcMain.handle("update:check", async () => {
   }
   try {
     setUpdateBusy(true);
+    updateReleaseNotes = [];
+    updateTargetVersion = "";
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (error) {
@@ -1397,7 +1459,7 @@ ipcMain.handle("app:get-version", async () => app.getVersion());
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
     loadSettings();
-    pendingInstalledVersion = consumeInstalledVersionMarker();
+    pendingInstalledUpdate = consumeInstalledVersionMarker();
     createMenu();
     createWindow();
     setupAutoUpdater();

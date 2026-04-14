@@ -1,5 +1,7 @@
 ﻿!include "LogicLib.nsh"
 
+LangString installing 1042 "업데이트 중입니다. 잠시 기다려주세요..."
+
 !ifndef BUILD_UNINSTALLER
   !macro customInstall
     ; Shortcut/icon refresh to avoid stale Electron cache.
