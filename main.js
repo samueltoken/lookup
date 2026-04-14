@@ -608,6 +608,8 @@ function getConversionEngineToken(convertMode = "fallback") {
       return "hancomcom-v1";
     case "hwpjs-html":
       return `hwpjs-${hwpJsVer}-hwpx-${hwpxVer}`;
+    case "xlsx-html":
+      return `xlsx-html-${xlsxVer}`;
     case "fallback":
       return `fallback-xlsx-${xlsxVer}`;
     default:
@@ -862,6 +864,32 @@ function normalizeText(text) {
     .trim();
 }
 
+async function isLikelyBookletPdf(pdfPath) {
+  try {
+    if (!pdfPath || !fs.existsSync(pdfPath)) {
+      return false;
+    }
+    const bytes = await fsp.readFile(pdfPath);
+    const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const pages = pdfDoc.getPages();
+    if (!pages.length) {
+      return false;
+    }
+    const sample = pages.slice(0, Math.min(3, pages.length));
+    let wideCount = 0;
+    for (const page of sample) {
+      const size = page.getSize();
+      const ratio = Number(size.width || 0) / Math.max(1, Number(size.height || 0));
+      if (ratio >= 1.45) {
+        wideCount += 1;
+      }
+    }
+    return wideCount >= 1;
+  } catch (_error) {
+    return false;
+  }
+}
+
 function convertWithWordCom(sourcePath, outputPdfPath) {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
@@ -914,14 +942,51 @@ function convertWithHancomCom(sourcePath, outputPdfPath, ext = ".hwp") {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$hwp = $null",
+    "$moduleRoot = 'HKCU:\\SOFTWARE\\HNC\\HwpAutomation\\Modules'",
+    "$moduleName = 'lookupFilePathChecker'",
+    "$modulePath = ''",
+    "$registered = $false",
     "try {",
+    "  if (-not (Test-Path $moduleRoot)) { New-Item -Path $moduleRoot -Force | Out-Null }",
+    "  $regValue = Get-ItemProperty -Path $moduleRoot -Name $moduleName -ErrorAction SilentlyContinue",
+    "  if ($regValue -and $regValue.$moduleName) { $modulePath = [string]$regValue.$moduleName }",
+    "  if (-not $modulePath -or -not (Test-Path $modulePath)) {",
+    "    $candidates = @(",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "    )",
+    "    foreach ($candidate in $candidates) {",
+    "      if ($candidate -and (Test-Path $candidate)) {",
+    "        $modulePath = $candidate",
+    "        break",
+    "      }",
+    "    }",
+    "    if ($modulePath -and (Test-Path $modulePath)) {",
+    "      Set-ItemProperty -Path $moduleRoot -Name $moduleName -Value $modulePath -Type String -Force",
+    "    }",
+    "  }",
     "  $hwp = New-Object -ComObject HWPFrame.HwpObject",
-    "  try { $hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') | Out-Null } catch {}",
+    "  if ($modulePath -and (Test-Path $modulePath)) {",
+    "    try { $hwp.RegisterModule('FilePathCheckDLL', $moduleName) | Out-Null; $registered = $true } catch {}",
+    "  }",
+    "  if (-not $registered) {",
+    "    try { $hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') | Out-Null; $registered = $true } catch {}",
+    "  }",
+    "  if (-not $registered) { throw 'hwp_security_module_missing' }",
     "  $hwp.XHwpWindows.Item(0).Visible = $false",
     "  $opened = $hwp.Open(" + source + ", '" + format + "', 'forceopen:true;versionwarning:false')",
     "  if (-not $opened) { throw 'hwp_open_failed' }",
     "  $saved = $hwp.SaveAs(" + output + ", 'PDF', '')",
     "  if (-not $saved) { throw 'hwp_save_failed' }",
+    "  Write-Output 'lookup_hwp_registered=1'",
     "} finally {",
     "  if ($hwp -ne $null) { try { $hwp.Quit() | Out-Null } catch {} }",
     "}",
@@ -1185,6 +1250,84 @@ function buildFallbackHtml({ sourcePath, sourceExt, contentText, warningMessage 
 </html>`;
 }
 
+function buildSpreadsheetFallbackHtml({ sourcePath, sourceExt, warningMessage }) {
+  const XLSX = ensureXlsxModule();
+  const workbook = XLSX.readFile(sourcePath, { cellDates: false, dense: false });
+  const sections = [];
+  const maxRows = 300;
+  const maxCols = 32;
+  for (const sheetName of workbook.SheetNames || []) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet || !sheet["!ref"]) {
+      continue;
+    }
+    const range = XLSX.utils.decode_range(sheet["!ref"]);
+    const startRow = range.s.r;
+    const endRow = Math.min(range.e.r, startRow + maxRows - 1);
+    const startCol = range.s.c;
+    const endCol = Math.min(range.e.c, startCol + maxCols - 1);
+
+    let htmlRows = "";
+    let hasAnyValue = false;
+    for (let row = startRow; row <= endRow; row += 1) {
+      let rowCells = "";
+      let rowHasValue = false;
+      for (let col = startCol; col <= endCol; col += 1) {
+        const address = XLSX.utils.encode_cell({ r: row, c: col });
+        const cell = sheet[address];
+        const cellText = cell ? String(cell.w ?? XLSX.utils.format_cell(cell) ?? cell.v ?? "").trim() : "";
+        if (cellText) {
+          rowHasValue = true;
+          hasAnyValue = true;
+        }
+        rowCells += `<td>${escapeHtml(cellText)}</td>`;
+      }
+      if (rowHasValue || row === startRow) {
+        htmlRows += `<tr>${rowCells}</tr>`;
+      }
+    }
+
+    if (!htmlRows || !hasAnyValue) {
+      continue;
+    }
+    sections.push(`<section class="sheet"><h2>${escapeHtml(sheetName)}</h2><table>${htmlRows}</table></section>`);
+  }
+
+  if (!sections.length) {
+    return "";
+  }
+  const safeTitle = escapeHtml(path.basename(sourcePath));
+  const safeExt = escapeHtml(sourceExt.replace(".", "").toUpperCase());
+  const warning = warningMessage ? `<div class="warning">${escapeHtml(warningMessage)}</div>` : "";
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { size: A4; margin: 14mm; }
+    html, body { margin: 0; padding: 0; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; color: #1f2937; }
+    .head { margin-bottom: 12px; border-bottom: 1px solid #cbd5e1; padding-bottom: 8px; }
+    .title { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
+    .meta { font-size: 11px; color: #475569; }
+    .warning { margin: 10px 0 12px; padding: 8px 10px; border: 1px solid #f2d6a8; background: #fff7ea; color: #9a5f08; font-size: 12px; border-radius: 6px; }
+    .sheet { page-break-after: always; }
+    .sheet:last-child { page-break-after: auto; }
+    .sheet h2 { margin: 0 0 8px; font-size: 14px; color: #0f172a; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.5px; }
+    td { border: 1px solid #d6deea; padding: 4px 5px; vertical-align: top; word-break: break-word; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <p class="title">${safeTitle}</p>
+    <div class="meta">원본 형식: ${safeExt} / lookup 표 변환 보기</div>
+  </div>
+  ${warning}
+  ${sections.join("\n")}
+</body>
+</html>`;
+}
+
 async function htmlToPdfBuffer(html) {
   const tempWindow = new BrowserWindow({
     show: false,
@@ -1400,12 +1543,32 @@ async function convertDocumentToPdf(sourcePath) {
 
     const hwpResult = convertWithHancomCom(resolved, hwpLayoutPdfPath, ext);
     if (hwpResult.ok && fs.existsSync(hwpLayoutPdfPath)) {
+      const suspiciousTwoUp = await isLikelyBookletPdf(hwpLayoutPdfPath);
+      if (suspiciousTwoUp) {
+        const retryPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
+        const retryResult = await convertHwpToPdfWithHwpJs(resolved, retryPdfPath);
+        if (retryResult.ok && fs.existsSync(retryPdfPath)) {
+          const retryTwoUp = await isLikelyBookletPdf(retryPdfPath);
+          if (!retryTwoUp) {
+            return {
+              sourcePath: resolved,
+              sourceExt: ext,
+              converted: true,
+              convertMode: "hwpjs-html",
+              warningMessage: "책자형 페이지가 감지되어 단면 보기용으로 다시 변환했습니다.",
+              errorCode: "",
+              pdfPath: retryPdfPath,
+              pdfBuffer: await fsp.readFile(retryPdfPath)
+            };
+          }
+        }
+      }
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
         convertMode: "hwp-layout",
-        warningMessage: "",
+        warningMessage: suspiciousTwoUp ? "책자형 페이지가 감지되어 단면 재변환을 시도했지만 원본 결과로 열었습니다." : "",
         errorCode: "",
         pdfPath: hwpLayoutPdfPath,
         pdfBuffer: await fsp.readFile(hwpLayoutPdfPath)
@@ -1445,11 +1608,56 @@ async function convertDocumentToPdf(sourcePath) {
       .map((value) => String(value || "").trim())
       .find(Boolean);
     const hwpTimedOut = isTimeoutResult(hwpResult);
-    const reasonHint = hwpTimedOut
-      ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
-      : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+    const hwpSecurityMissing = /hwp_security_module_missing/i.test(String(hwpResult?.stderr || hwpResult?.error || ""));
+    const reasonHint = hwpSecurityMissing
+      ? "한컴 보안 모듈이 준비되지 않아 텍스트 기반 보기로 전환했습니다."
+      : hwpTimedOut
+        ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
+        : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
     warningMessage = buildConversionWarning(ext, hwpErrorDetail, reasonHint);
-    errorCode = hwpTimedOut ? "ENGINE_TIMEOUT" : "CONVERT_FAILED";
+    errorCode = hwpSecurityMissing ? "ENGINE_MISSING" : hwpTimedOut ? "ENGINE_TIMEOUT" : "CONVERT_FAILED";
+  }
+
+  if (ext === ".xls" || ext === ".xlsx") {
+    const xlsxHtmlPdfPath = createConvertedPdfPath(resolved, "xlsx-html");
+    const xlsxHtmlCache = readCachedPdf(xlsxHtmlPdfPath);
+    if (xlsxHtmlCache) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "xlsx-html",
+        warningMessage: warningMessage || "표 보기 모드로 열었습니다.",
+        errorCode: "",
+        pdfPath: xlsxHtmlCache,
+        pdfBuffer: await fsp.readFile(xlsxHtmlCache)
+      };
+    }
+    if (errorCode !== "EMPTY_DOCUMENT") {
+      try {
+        const xlsxHtml = buildSpreadsheetFallbackHtml({
+          sourcePath: resolved,
+          sourceExt: ext,
+          warningMessage: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다."
+        });
+        if (xlsxHtml) {
+          const xlsxPdf = await htmlToPdfBuffer(xlsxHtml);
+          await fsp.writeFile(xlsxHtmlPdfPath, xlsxPdf);
+          return {
+            sourcePath: resolved,
+            sourceExt: ext,
+            converted: true,
+            convertMode: "xlsx-html",
+            warningMessage: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다.",
+            errorCode: "",
+            pdfPath: xlsxHtmlPdfPath,
+            pdfBuffer: xlsxPdf
+          };
+        }
+      } catch (_error) {
+        // continue to text fallback
+      }
+    }
   }
 
   const fallbackPdfPath = createConvertedPdfPath(resolved, "fallback");
