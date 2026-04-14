@@ -151,6 +151,7 @@ const i18n = {
     openErrorConvert: "문서 변환에 실패했습니다. 파일을 다시 확인해 주세요.",
     openErrorEngineMissing: "변환 엔진을 찾지 못했습니다. Word/Excel/한컴 또는 LibreOffice 설치를 확인해 주세요.",
     openErrorTimeout: "변환 시간이 오래 걸려 중단되었습니다. 잠시 후 다시 시도해 주세요.",
+    openErrorEmptyDocument: "문서에 표시할 내용이 없습니다.",
     openErrorGeneric: "문서를 열지 못했습니다.",
     openErrorPdfFallback: "일반 열기에 실패해 PDF 직접 열기로 복구했습니다."
   },
@@ -256,6 +257,7 @@ const i18n = {
     openErrorConvert: "Failed to convert this document.",
     openErrorEngineMissing: "No conversion engine found. Check Word/Excel/Hancom or LibreOffice installation.",
     openErrorTimeout: "Conversion timed out. Please try again.",
+    openErrorEmptyDocument: "No printable content found in this document.",
     openErrorGeneric: "Unable to open this document.",
     openErrorPdfFallback: "Standard open failed. Recovered using direct PDF read."
   }
@@ -353,7 +355,7 @@ const state = {
   scrollRaf: 0,
   saveDirty: false,
   wheelZoomRaf: 0,
-  wheelZoomApplying: false,
+  wheelZoomSettleTimer: 0,
   wheelZoomDelta: 0,
   wheelZoomAnchor: null,
   singlePageWheelStepTime: 0,
@@ -362,8 +364,7 @@ const state = {
   leftPanelWidth: clamp(getStoredNumber(storage.leftPanelWidth, 250), 180, 560),
   rightPanelWidth: clamp(getStoredNumber(storage.rightPanelWidth, 280), 220, 620),
   activeResizer: null,
-  fullRenderPassVersion: 0,
-  fullRenderTimer: 0,
+  visibleRenderTimer: 0,
   layoutRecoveryTimer: 0,
   appVersion: "",
   updateTargetVersion: "",
@@ -740,6 +741,8 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
       return t("openErrorEngineMissing");
     case "CONVERT_TIMEOUT":
       return t("openErrorTimeout");
+    case "EMPTY_DOCUMENT":
+      return fallbackMessage || t("openErrorEmptyDocument");
     case "CONVERT_FAILED":
       return fallbackMessage || t("openErrorConvert");
     default:
@@ -1396,10 +1399,10 @@ function buildPageElement(pageNum) {
   wrap.appendChild(badge);
 
   bindAnnotationEvents(pageNum, annotationCanvas);
-  return { wrap, canvas, annotationCanvas, searchOverlay, badge, viewport: null, renderToken: 0 };
+  return { wrap, canvas, annotationCanvas, searchOverlay, badge, viewport: null, renderToken: 0, lastRenderKey: "" };
 }
 
-async function renderPage(pageNum) {
+async function renderPage(pageNum, options = {}) {
   const view = state.pageViews.get(pageNum);
   if (!view) {
     return;
@@ -1409,11 +1412,18 @@ async function renderPage(pageNum) {
     state.scale = clamp(safeScale, 0.25, 6);
   }
   const page = await getPdfPage(pageNum);
-  const viewport = page.getViewport({ scale: state.scale, rotation: getEffectivePageRotation(page, pageNum) });
+  const rotation = getEffectivePageRotation(page, pageNum);
+  const viewport = page.getViewport({ scale: state.scale, rotation });
+  const renderKey = `${state.scale.toFixed(4)}|${rotation}|${Math.round((window.devicePixelRatio || 1) * 100)}`;
   view.viewport = viewport;
 
   view.wrap.style.width = `${viewport.width}px`;
   view.wrap.style.height = `${viewport.height}px`;
+  if (!options.force && view.lastRenderKey === renderKey) {
+    drawAnnotationsForPage(pageNum);
+    drawSearchHighlightsForPage(pageNum);
+    return;
+  }
 
   const dpr = window.devicePixelRatio || 1;
   const requestedScale = dpr * state.mainRenderQuality;
@@ -1495,7 +1505,7 @@ async function renderPage(pageNum) {
   if (renderToken !== view.renderToken) {
     return;
   }
-
+  view.lastRenderKey = renderKey;
   drawAnnotationsForPage(pageNum);
   drawSearchHighlightsForPage(pageNum);
 }
@@ -1525,49 +1535,34 @@ function getVisiblePageNumbers() {
   return visible;
 }
 
-function buildPriorityRenderOrder() {
+function buildPriorityRenderOrder(neighborDepth = 1) {
   const visible = getVisiblePageNumbers();
   const priority = new Set();
+  const depth = Math.max(0, Number.isFinite(neighborDepth) ? Math.floor(neighborDepth) : 1);
   for (const pageNum of visible) {
     priority.add(pageNum);
     const index = state.pageOrder.indexOf(pageNum);
-    if (index > 0) {
-      priority.add(state.pageOrder[index - 1]);
-    }
-    if (index >= 0 && index < state.pageOrder.length - 1) {
-      priority.add(state.pageOrder[index + 1]);
+    for (let offset = 1; offset <= depth; offset += 1) {
+      if (index - offset >= 0) {
+        priority.add(state.pageOrder[index - offset]);
+      }
+      if (index + offset < state.pageOrder.length) {
+        priority.add(state.pageOrder[index + offset]);
+      }
     }
   }
 
   const orderedPriority = state.pageOrder.filter((pageNum) => priority.has(pageNum));
-  const orderedRest = state.pageOrder.filter((pageNum) => !priority.has(pageNum));
-  return { orderedPriority, orderedRest };
+  return { orderedPriority };
 }
 
-async function renderPagesList(pageNums, version) {
+async function renderPagesList(pageNums, version, options = {}) {
   for (const pageNum of pageNums) {
     if (version !== state.renderVersion) {
       return;
     }
-    await renderPage(pageNum);
+    await renderPage(pageNum, options);
   }
-}
-
-function scheduleBackgroundRender(orderedRest, version) {
-  if (state.fullRenderTimer) {
-    clearTimeout(state.fullRenderTimer);
-    state.fullRenderTimer = 0;
-  }
-  if (!orderedRest.length) {
-    return;
-  }
-  const passVersion = ++state.fullRenderPassVersion;
-  state.fullRenderTimer = setTimeout(async () => {
-    if (passVersion !== state.fullRenderPassVersion || version !== state.renderVersion) {
-      return;
-    }
-    await renderPagesList(orderedRest, version);
-  }, 0);
 }
 
 async function renderAllPages(options = {}) {
@@ -1586,14 +1581,29 @@ async function renderAllPages(options = {}) {
   state.pageRenderTasks.clear();
   const version = ++state.renderVersion;
   const prioritizeVisible = options.prioritizeVisible !== false;
+  const force = options.force === true;
   if (!prioritizeVisible) {
-    await renderPagesList(state.pageOrder, version);
+    await renderPagesList(state.pageOrder, version, { force });
     return;
   }
+  const { orderedPriority } = buildPriorityRenderOrder(options.neighborDepth ?? 1);
+  const targetPages = orderedPriority.length ? orderedPriority : [state.currentPage];
+  await renderPagesList(targetPages, version, { force });
+}
 
-  const { orderedPriority, orderedRest } = buildPriorityRenderOrder();
-  await renderPagesList(orderedPriority, version);
-  scheduleBackgroundRender(orderedRest, version);
+function scheduleVisibleRegionRender(delayMs = 80, options = {}) {
+  if (state.visibleRenderTimer) {
+    clearTimeout(state.visibleRenderTimer);
+    state.visibleRenderTimer = 0;
+  }
+  state.visibleRenderTimer = setTimeout(() => {
+    state.visibleRenderTimer = 0;
+    renderAllPages({
+      prioritizeVisible: true,
+      neighborDepth: options.neighborDepth ?? 1,
+      force: options.force === true
+    }).catch(() => {});
+  }, Math.max(0, delayMs));
 }
 
 async function renderThumbnail(pageNum, thumbCanvas) {
@@ -1803,6 +1813,7 @@ async function goToPage(pageNum, smooth = false) {
     els.viewerPanel.scrollTop = scrollTop;
     els.viewerPanel.scrollLeft = scrollLeft;
   }
+  scheduleVisibleRegionRender(0, { neighborDepth: 1 });
 }
 
 function alignCurrentPageToViewerCenter() {
@@ -1845,6 +1856,7 @@ function updateCurrentPageByScroll() {
   if (bestPage !== state.currentPage) {
     updateCurrentPage(bestPage);
   }
+  scheduleVisibleRegionRender(70, { neighborDepth: 1 });
 }
 
 function queueScrollSync() {
@@ -2894,18 +2906,35 @@ function requestWheelZoomApply() {
     const anchor = state.wheelZoomAnchor;
     state.wheelZoomDelta = 0;
     const factor = clamp(Math.exp(-delta * 0.0023), 0.78, 1.42);
-    queueZoomJob(state.scale * factor, anchor);
+    applyZoomPreview(state.scale * factor, anchor);
+    if (state.wheelZoomSettleTimer) {
+      clearTimeout(state.wheelZoomSettleTimer);
+      state.wheelZoomSettleTimer = 0;
+    }
+    state.wheelZoomSettleTimer = setTimeout(() => {
+      state.wheelZoomSettleTimer = 0;
+      queueZoomJob(state.scale, state.wheelZoomAnchor, {
+        prioritizeVisible: true,
+        neighborDepth: 1,
+        forceRender: true
+      });
+    }, 140);
     if (Math.abs(state.wheelZoomDelta) >= 0.01) {
       requestWheelZoomApply();
     }
   });
 }
 
-function queueZoomJob(scale, anchor) {
+function queueZoomJob(scale, anchor, options = {}) {
   state.pendingZoomJob = {
     scale,
     anchor,
-    options: { prioritizeVisible: true }
+    options: {
+      prioritizeVisible: options.prioritizeVisible !== false,
+      neighborDepth: options.neighborDepth ?? 1,
+      forceRender: options.forceRender === true,
+      zoomMode: options.zoomMode || "manual"
+    }
   };
   if (!state.zoomJobRunning) {
     runZoomJobs().catch(() => {});
@@ -2936,6 +2965,52 @@ function handleCtrlWheelZoom(event) {
   state.wheelZoomAnchor = buildZoomAnchorFromClient(event.clientX, event.clientY);
   state.wheelZoomDelta += normalizeWheelDelta(event);
   requestWheelZoomApply();
+}
+
+function applyScalePreview(oldScale, nextScale) {
+  if (!Number.isFinite(oldScale) || !Number.isFinite(nextScale) || oldScale <= 0 || nextScale <= 0) {
+    return;
+  }
+  const ratio = nextScale / oldScale;
+  if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 0.0001) {
+    return;
+  }
+  for (const view of state.pageViews.values()) {
+    const baseWidth = parseFloat(view.wrap.style.width || "") || (view.viewport ? view.viewport.width : 0);
+    const baseHeight = parseFloat(view.wrap.style.height || "") || (view.viewport ? view.viewport.height : 0);
+    if (baseWidth > 0) {
+      view.wrap.style.width = `${Math.max(1, baseWidth * ratio)}px`;
+      view.canvas.style.width = view.wrap.style.width;
+      view.annotationCanvas.style.width = view.wrap.style.width;
+    }
+    if (baseHeight > 0) {
+      view.wrap.style.height = `${Math.max(1, baseHeight * ratio)}px`;
+      view.canvas.style.height = view.wrap.style.height;
+      view.annotationCanvas.style.height = view.wrap.style.height;
+    }
+    view.lastRenderKey = "";
+  }
+}
+
+function applyZoomPreview(newScale, anchor = null) {
+  if (!state.pdfDoc) {
+    return;
+  }
+  const nextScale = clamp(newScale, 0.25, 6);
+  if (Math.abs(nextScale - state.scale) < 0.001) {
+    return;
+  }
+  const oldScale = state.scale;
+  state.scale = nextScale;
+  state.lastValidScale = nextScale;
+  setZoomMode("manual");
+  applyScalePreview(oldScale, nextScale);
+  updateToolbarState();
+  if (anchor) {
+    const ratio = nextScale / oldScale;
+    els.viewerPanel.scrollLeft = anchor.x * ratio - anchor.dx;
+    els.viewerPanel.scrollTop = anchor.y * ratio - anchor.dy;
+  }
 }
 
 function isViewerEventTarget(event) {
@@ -2973,7 +3048,8 @@ async function zoomTo(newScale, anchorInput = null, options = {}) {
     return;
   }
   const nextScale = clamp(newScale, 0.25, 6);
-  if (Math.abs(nextScale - state.scale) < 0.001) {
+  const changedScale = Math.abs(nextScale - state.scale) >= 0.001;
+  if (!changedScale && !options.forceRender) {
     return;
   }
 
@@ -2991,13 +3067,20 @@ async function zoomTo(newScale, anchorInput = null, options = {}) {
   }
 
   const oldScale = state.scale;
-  state.scale = nextScale;
-  state.lastValidScale = nextScale;
+  if (changedScale) {
+    state.scale = nextScale;
+    state.lastValidScale = nextScale;
+    applyScalePreview(oldScale, nextScale);
+  }
   setZoomMode(options.zoomMode || "manual");
-  await renderAllPages({ prioritizeVisible: options.prioritizeVisible !== false });
+  await renderAllPages({
+    prioritizeVisible: options.prioritizeVisible !== false,
+    neighborDepth: options.neighborDepth ?? 1,
+    force: options.forceRender === true
+  });
   updateToolbarState();
 
-  if (anchor) {
+  if (anchor && changedScale) {
     const ratio = nextScale / oldScale;
     els.viewerPanel.scrollLeft = anchor.x * ratio - anchor.dx;
     els.viewerPanel.scrollTop = anchor.y * ratio - anchor.dy;

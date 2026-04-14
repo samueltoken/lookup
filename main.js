@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const { spawnSync, spawn } = require("node:child_process");
+const packageMeta = require("./package.json");
 
 let mainWindow = null;
 let pendingDocumentToOpen = null;
@@ -89,6 +90,9 @@ function mt(key) {
 const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"]);
 const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"]);
 const HWP_EXTENSIONS = new Set([".hwp", ".hwpx"]);
+const CONVERT_CACHE_SCHEMA_VERSION = "v2";
+const FALLBACK_CACHE_TTL_MS = 45 * 60 * 1000;
+const APP_RELEASE_VERSION = String(packageMeta?.version || app.getVersion() || "0.0.0");
 pendingDocumentToOpen = extractDocumentPath(process.argv);
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -590,14 +594,118 @@ function setUpdateBusy(nextBusy) {
   }
 }
 
-function createConvertedPdfPath(sourcePath) {
+function getConversionEngineToken(convertMode = "fallback") {
+  const deps = packageMeta?.dependencies || {};
+  const hwpJsVer = String(deps["@ohah/hwpjs"] || "na");
+  const hwpxVer = String(deps["hwpx-js"] || "na");
+  const xlsxVer = String(deps.xlsx || "na");
+  switch (String(convertMode || "").toLowerCase()) {
+    case "office-com":
+      return "officecom-v1";
+    case "libreoffice":
+      return "libreoffice-v1";
+    case "hwp-layout":
+      return "hancomcom-v1";
+    case "hwpjs-html":
+      return `hwpjs-${hwpJsVer}-hwpx-${hwpxVer}`;
+    case "fallback":
+      return `fallback-xlsx-${xlsxVer}`;
+    default:
+      return "generic-v1";
+  }
+}
+
+function createConvertedPdfPath(sourcePath, convertMode = "fallback") {
   const resolved = path.resolve(sourcePath);
   const stat = fs.statSync(resolved);
   const ext = getFileExtension(resolved).replace(".", "");
+  const mode = String(convertMode || "fallback").toLowerCase();
+  const engineToken = getConversionEngineToken(mode);
   const baseName = path.basename(resolved, path.extname(resolved)).replace(/[^\\w.\\-가-힣]/g, "_").slice(0, 56);
-  const signature = `${resolved}|${stat.mtimeMs}|${stat.size}`;
+  const signature = `${resolved}|${stat.mtimeMs}|${stat.size}|${APP_RELEASE_VERSION}|${CONVERT_CACHE_SCHEMA_VERSION}|${mode}|${engineToken}`;
   const digest = crypto.createHash("sha1").update(signature).digest("hex").slice(0, 12);
-  return path.join(ensureConvertedDir(), `${baseName}-${ext}-${digest}.pdf`);
+  return path.join(ensureConvertedDir(), `${baseName}-${ext}-${mode}-${digest}.pdf`);
+}
+
+function readCachedPdf(cachePath, options = {}) {
+  if (!cachePath || !fs.existsSync(cachePath)) {
+    return null;
+  }
+  if (Number.isFinite(options.maxAgeMs) && options.maxAgeMs > 0) {
+    try {
+      const stat = fs.statSync(cachePath);
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs > options.maxAgeMs) {
+        return null;
+      }
+    } catch (_error) {
+      return null;
+    }
+  }
+  return cachePath;
+}
+
+function detectSpreadsheetVisualAssets(filePath) {
+  const source = escapeForPowerShell(filePath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -AssemblyName 'System.IO.Compression.FileSystem'",
+    `$zip = [System.IO.Compression.ZipFile]::OpenRead(${source})`,
+    "try {",
+    "  $hasVisual = $false",
+    "  foreach ($entry in $zip.Entries) {",
+    "    $name = $entry.FullName.ToLowerInvariant()",
+    "    if ($name.StartsWith('xl/media/') -or $name.StartsWith('xl/charts/') -or $name.StartsWith('xl/drawings/')) {",
+    "      $hasVisual = $true",
+    "      break",
+    "    }",
+    "  }",
+    "  if ($hasVisual) { '1' } else { '0' }",
+    "} finally {",
+    "  if ($zip -ne $null) { $zip.Dispose() }",
+    "}"
+  ].join("; ");
+  const result = runPowerShell(script, 20000);
+  if (!result.ok) {
+    return { inspected: false, hasVisual: false };
+  }
+  return { inspected: true, hasVisual: String(result.stdout || "").trim() === "1" };
+}
+
+function inspectSpreadsheetContent(filePath) {
+  try {
+    const XLSX = ensureXlsxModule();
+    const workbook = XLSX.readFile(filePath, { cellDates: false, dense: true });
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) {
+        continue;
+      }
+      for (const cellKey of Object.keys(sheet)) {
+        if (!cellKey || cellKey.startsWith("!")) {
+          continue;
+        }
+        const cell = sheet[cellKey];
+        if (!cell) {
+          continue;
+        }
+        const rendered = String(cell.w ?? cell.v ?? "").trim();
+        if (rendered || cell.f) {
+          return { hasContent: true, reason: "cell-data" };
+        }
+      }
+    }
+    const visual = detectSpreadsheetVisualAssets(filePath);
+    if (visual.hasVisual) {
+      return { hasContent: true, reason: "visual-assets" };
+    }
+    if (visual.inspected) {
+      return { hasContent: false, reason: "empty-document" };
+    }
+    return { hasContent: true, reason: "inspection-unavailable" };
+  } catch (_error) {
+    return { hasContent: true, reason: "parse-error" };
+  }
 }
 
 function classifyDocumentOpenError(error) {
@@ -617,6 +725,9 @@ function classifyDocumentOpenError(error) {
   }
   if (/libreoffice_missing|engine.*missing|변환 엔진.*찾/i.test(message)) {
     return "ENGINE_MISSING";
+  }
+  if (/empty_document|표시할 셀 내용이 없습니다|empty document/i.test(message)) {
+    return "EMPTY_DOCUMENT";
   }
   if (/변환|convert|hwp|office/i.test(message)) {
     return "CONVERT_FAILED";
@@ -1133,33 +1244,78 @@ async function extractDocumentTextForFallback(filePath, ext) {
   return "";
 }
 
-async function convertOfficeFileToPdf(sourcePath, outputPdfPath, ext) {
-  let comResult = { ok: false, stderr: "unsupported_office_ext" };
-  if (ext === ".doc" || ext === ".docx") {
-    comResult = convertWithWordCom(sourcePath, outputPdfPath);
-  } else if (ext === ".xls" || ext === ".xlsx") {
-    comResult = convertWithExcelCom(sourcePath, outputPdfPath);
+async function convertOfficeFileToPdf(sourcePath, ext) {
+  if (ext === ".xls" || ext === ".xlsx") {
+    const spreadsheetInspection = inspectSpreadsheetContent(sourcePath);
+    if (!spreadsheetInspection.hasContent) {
+      return {
+        ok: false,
+        engine: "empty",
+        errorCode: "EMPTY_DOCUMENT",
+        warningMessage: "문서에 표시할 셀 내용이 없습니다.",
+        emptyDocument: true
+      };
+    }
   }
 
-  if (comResult.ok && fs.existsSync(outputPdfPath)) {
+  const officePdfPath = createConvertedPdfPath(sourcePath, "office-com");
+  const cachedOffice = readCachedPdf(officePdfPath);
+  if (cachedOffice) {
     return {
       ok: true,
       engine: "office-com",
-      warningMessage: ""
+      warningMessage: "",
+      pdfPath: cachedOffice,
+      fromCache: true,
+      errorCode: ""
     };
   }
 
-  const libreResult = await convertWithLibreOffice(sourcePath, outputPdfPath);
-  if (libreResult.ok && fs.existsSync(outputPdfPath)) {
-    const warningMessage = buildConversionWarning(ext, "", "Office 자동화 변환에 실패해 LibreOffice 엔진으로 열었습니다.");
+  let comResult = { ok: false, stderr: "unsupported_office_ext" };
+  if (ext === ".doc" || ext === ".docx") {
+    comResult = convertWithWordCom(sourcePath, officePdfPath);
+  } else if (ext === ".xls" || ext === ".xlsx") {
+    comResult = convertWithExcelCom(sourcePath, officePdfPath);
+  }
+
+  if (comResult.ok && fs.existsSync(officePdfPath)) {
+    return {
+      ok: true,
+      engine: "office-com",
+      warningMessage: "",
+      pdfPath: officePdfPath,
+      fromCache: false,
+      errorCode: ""
+    };
+  }
+
+  const librePdfPath = createConvertedPdfPath(sourcePath, "libreoffice");
+  const cachedLibre = readCachedPdf(librePdfPath);
+  if (cachedLibre) {
     return {
       ok: true,
       engine: "libreoffice",
-      warningMessage
+      warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
+      pdfPath: cachedLibre,
+      fromCache: true,
+      errorCode: ""
     };
   }
 
-  const reasonHint = isTimeoutResult(comResult) || isTimeoutResult(libreResult)
+  const libreResult = await convertWithLibreOffice(sourcePath, librePdfPath);
+  if (libreResult.ok && fs.existsSync(librePdfPath)) {
+    return {
+      ok: true,
+      engine: "libreoffice",
+      warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
+      pdfPath: librePdfPath,
+      fromCache: false,
+      errorCode: ""
+    };
+  }
+
+  const timedOut = isTimeoutResult(comResult) || isTimeoutResult(libreResult);
+  const reasonHint = timedOut
     ? "변환 시간이 초과되어 호환 보기로 전환했습니다."
     : libreResult.missingEngine
       ? "Word/Excel 또는 LibreOffice 변환 엔진을 찾지 못해 호환 보기로 전환했습니다."
@@ -1172,7 +1328,9 @@ async function convertOfficeFileToPdf(sourcePath, outputPdfPath, ext) {
   return {
     ok: false,
     engine: "fallback",
-    warningMessage: buildConversionWarning(ext, details, reasonHint)
+    warningMessage: buildConversionWarning(ext, details, reasonHint),
+    errorCode: timedOut ? "ENGINE_TIMEOUT" : libreResult.missingEngine ? "ENGINE_MISSING" : "CONVERT_FAILED",
+    emptyDocument: false
   };
 }
 
@@ -1199,82 +1357,126 @@ async function convertDocumentToPdf(sourcePath) {
       converted: false,
       convertMode: "native",
       warningMessage: "",
+      errorCode: "",
       pdfPath: resolved,
       pdfBuffer: await fsp.readFile(resolved)
     };
   }
 
-  const targetPdfPath = createConvertedPdfPath(resolved);
-  if (fs.existsSync(targetPdfPath)) {
-    return {
-      sourcePath: resolved,
-      sourceExt: ext,
-      converted: true,
-      convertMode: "cache",
-      warningMessage: "",
-      pdfPath: targetPdfPath,
-      pdfBuffer: await fsp.readFile(targetPdfPath)
-    };
-  }
-
   let warningMessage = "";
+  let errorCode = "";
+
   if (OFFICE_EXTENSIONS.has(ext)) {
-    const officeResult = await convertOfficeFileToPdf(resolved, targetPdfPath, ext);
-    if (officeResult.ok && fs.existsSync(targetPdfPath)) {
+    const officeResult = await convertOfficeFileToPdf(resolved, ext);
+    if (officeResult.ok && officeResult.pdfPath && fs.existsSync(officeResult.pdfPath)) {
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
-        convertMode: officeResult.engine || "office",
+        convertMode: officeResult.engine || "office-com",
         warningMessage: officeResult.warningMessage || "",
-        pdfPath: targetPdfPath,
-        pdfBuffer: await fsp.readFile(targetPdfPath)
+        errorCode: "",
+        pdfPath: officeResult.pdfPath,
+        pdfBuffer: await fsp.readFile(officeResult.pdfPath)
       };
     }
     warningMessage = officeResult.warningMessage || "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
+    errorCode = officeResult.errorCode || "";
   } else if (HWP_EXTENSIONS.has(ext)) {
-    const hwpResult = convertWithHancomCom(resolved, targetPdfPath, ext);
-    if (hwpResult.ok && fs.existsSync(targetPdfPath)) {
+    const hwpLayoutPdfPath = createConvertedPdfPath(resolved, "hwp-layout");
+    const cachedHwpLayout = readCachedPdf(hwpLayoutPdfPath);
+    if (cachedHwpLayout) {
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
         convertMode: "hwp-layout",
         warningMessage: "",
-        pdfPath: targetPdfPath,
-        pdfBuffer: await fsp.readFile(targetPdfPath)
+        errorCode: "",
+        pdfPath: cachedHwpLayout,
+        pdfBuffer: await fsp.readFile(cachedHwpLayout)
       };
     }
-    const hwpJsResult = await convertHwpToPdfWithHwpJs(resolved, targetPdfPath);
-    if (hwpJsResult.ok && fs.existsSync(targetPdfPath)) {
+
+    const hwpResult = convertWithHancomCom(resolved, hwpLayoutPdfPath, ext);
+    if (hwpResult.ok && fs.existsSync(hwpLayoutPdfPath)) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "hwp-layout",
+        warningMessage: "",
+        errorCode: "",
+        pdfPath: hwpLayoutPdfPath,
+        pdfBuffer: await fsp.readFile(hwpLayoutPdfPath)
+      };
+    }
+
+    const hwpJsPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
+    const cachedHwpJs = readCachedPdf(hwpJsPdfPath);
+    if (cachedHwpJs) {
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
         convertMode: "hwpjs-html",
         warningMessage: "원본 변환 엔진을 찾지 못해 호환 보기 모드로 열었습니다.",
-        pdfPath: targetPdfPath,
-        pdfBuffer: await fsp.readFile(targetPdfPath)
+        errorCode: "",
+        pdfPath: cachedHwpJs,
+        pdfBuffer: await fsp.readFile(cachedHwpJs)
       };
     }
+
+    const hwpJsResult = await convertHwpToPdfWithHwpJs(resolved, hwpJsPdfPath);
+    if (hwpJsResult.ok && fs.existsSync(hwpJsPdfPath)) {
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "hwpjs-html",
+        warningMessage: "원본 변환 엔진을 찾지 못해 호환 보기 모드로 열었습니다.",
+        errorCode: "",
+        pdfPath: hwpJsPdfPath,
+        pdfBuffer: await fsp.readFile(hwpJsPdfPath)
+      };
+    }
+
     const hwpErrorDetail = [hwpResult?.stderr, hwpResult?.error, hwpJsResult?.reason]
       .map((value) => String(value || "").trim())
       .find(Boolean);
-    const reasonHint = isTimeoutResult(hwpResult)
+    const hwpTimedOut = isTimeoutResult(hwpResult);
+    const reasonHint = hwpTimedOut
       ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
       : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
     warningMessage = buildConversionWarning(ext, hwpErrorDetail, reasonHint);
+    errorCode = hwpTimedOut ? "ENGINE_TIMEOUT" : "CONVERT_FAILED";
+  }
+
+  const fallbackPdfPath = createConvertedPdfPath(resolved, "fallback");
+  const fallbackCache = readCachedPdf(fallbackPdfPath, { maxAgeMs: FALLBACK_CACHE_TTL_MS });
+  if (fallbackCache) {
+    return {
+      sourcePath: resolved,
+      sourceExt: ext,
+      converted: true,
+      convertMode: "fallback",
+      warningMessage,
+      errorCode,
+      pdfPath: fallbackCache,
+      pdfBuffer: await fsp.readFile(fallbackCache)
+    };
   }
 
   const extractedText = await extractDocumentTextForFallback(resolved, ext);
+  const fallbackText = extractedText || (errorCode === "EMPTY_DOCUMENT" ? "문서에 표시할 셀 내용이 없습니다." : "");
   const html = buildFallbackHtml({
     sourcePath: resolved,
     sourceExt: ext,
-    contentText: extractedText,
+    contentText: fallbackText,
     warningMessage
   });
   const fallbackPdf = await htmlToPdfBuffer(html);
-  await fsp.writeFile(targetPdfPath, fallbackPdf);
+  await fsp.writeFile(fallbackPdfPath, fallbackPdf);
 
   return {
     sourcePath: resolved,
@@ -1282,7 +1484,8 @@ async function convertDocumentToPdf(sourcePath) {
     converted: true,
     convertMode: "fallback",
     warningMessage,
-    pdfPath: targetPdfPath,
+    errorCode,
+    pdfPath: fallbackPdfPath,
     pdfBuffer: fallbackPdf
   };
 }
@@ -1798,6 +2001,7 @@ ipcMain.handle("document:open", async (_event, filePath) => {
       converted: converted.converted,
       convertMode: converted.convertMode,
       warningMessage: converted.warningMessage,
+      errorCode: converted.errorCode || "",
       pdfPath: converted.pdfPath,
       data: converted.pdfBuffer
     };
@@ -1820,6 +2024,7 @@ ipcMain.handle("document:convert", async (_event, filePath) => {
       converted: converted.converted,
       convertMode: converted.convertMode,
       warningMessage: converted.warningMessage,
+      errorCode: converted.errorCode || "",
       pdfPath: converted.pdfPath
     };
   } catch (error) {

@@ -1,6 +1,6 @@
 {
   "name": "lookup",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
@@ -37,7 +37,8 @@
   "devDependencies": {
     "electron": "^41.2.0",
     "electron-builder": "^26.8.1",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "rcedit": "^5.0.2"
   },
   "build": {
     "appId": "com.lookup.pdfviewer",
@@ -135,6 +136,7 @@
       "installerHeaderIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,
       "include": "build/installer.nsh"
-    }
+    },
+    "afterPack": "scripts/after-pack.mjs"
   }
 }
