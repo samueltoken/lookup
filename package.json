@@ -1,12 +1,12 @@
 {
   "name": "lookup",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
     "build:icon": "node scripts/generate-duck-icon.mjs",
     "start": "npm run build:icon && electron .",
-    "dist": "npm run build:icon && electron-builder --win nsis --publish never && node scripts/generate-latest-yml.mjs",
+    "dist": "npm run build:icon && node scripts/check-utf8-messages.mjs && electron-builder --win nsis --publish never && node scripts/generate-latest-yml.mjs",
     "pack": "npm run build:icon && electron-builder --dir"
   },
   "keywords": [

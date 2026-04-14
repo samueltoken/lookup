@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("lookupAPI", {
   readPdfFile: (filePath) => ipcRenderer.invoke("pdf:read-file", filePath),
   writePdfFile: (filePath, data) => ipcRenderer.invoke("pdf:write-file", { filePath, data }),
   printPreview: (data, fileName) => ipcRenderer.invoke("window:print-preview", { data, fileName }),
+  printDocument: (data, fileName) => ipcRenderer.invoke("window:print-document", { data, fileName }),
   copyText: (text) => ipcRenderer.invoke("clipboard:copy-text", text),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   setLanguage: (language) => ipcRenderer.invoke("settings:set-language", language),
