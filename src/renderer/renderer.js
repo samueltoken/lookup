@@ -56,10 +56,10 @@ const i18n = {
     saveOverwrite: "덮어쓰기",
     ribbonHome: "홈",
     ribbonView: "보기",
-    ribbonAnnotate: "주석",
     ribbonTools: "도구",
     ribbonGroupFile: "파일",
     ribbonGroupPage: "페이지",
+    ribbonGroupSheet: "시트",
     ribbonGroupZoom: "확대/축소",
     ribbonGroupRotate: "회전/정리",
     ribbonGroupLayout: "화면",
@@ -152,6 +152,10 @@ const i18n = {
     copyDeveloperEmail: "개발자 문의 이메일 복사",
     languageKo: "한국어",
     languageEn: "English",
+    versionInfo: "버전 정보",
+    sheetSelectLabel: "시트",
+    sheetSelectPlaceholder: "시트 선택",
+    sheetJumped: "{sheet} 시트로 이동했습니다.",
     openErrorNotFound: "파일을 찾을 수 없습니다. 경로를 확인해 주세요.",
     openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
     openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
@@ -168,10 +172,10 @@ const i18n = {
     saveOverwrite: "Overwrite",
     ribbonHome: "Home",
     ribbonView: "View",
-    ribbonAnnotate: "Annotate",
     ribbonTools: "Tools",
     ribbonGroupFile: "File",
     ribbonGroupPage: "Page",
+    ribbonGroupSheet: "Sheet",
     ribbonGroupZoom: "Zoom",
     ribbonGroupRotate: "Rotate / Clean",
     ribbonGroupLayout: "Layout",
@@ -264,6 +268,10 @@ const i18n = {
     copyDeveloperEmail: "Copy Developer Email",
     languageKo: "한국어",
     languageEn: "English",
+    versionInfo: "Version Info",
+    sheetSelectLabel: "Sheet",
+    sheetSelectPlaceholder: "Select Sheet",
+    sheetJumped: 'Moved to sheet "{sheet}".',
     openErrorNotFound: "File not found. Please check the path.",
     openErrorPermission: "No permission to open this file.",
     openErrorUnsupported: "Unsupported file format.",
@@ -336,6 +344,7 @@ const state = {
   sourceExt: ".pdf",
   sourceConverted: false,
   sourceConvertMode: "native",
+  sourceSheetMap: [],
   pageOrder: [],
   pageCache: new Map(),
   pageViews: new Map(),
@@ -366,7 +375,7 @@ const state = {
   viewMode: ["single", "spread", "focus"].includes(localStorage.getItem(storage.viewMode) || "")
     ? localStorage.getItem(storage.viewMode)
     : "single",
-  activeRibbonTab: ["home", "view", "annotate", "tools"].includes(localStorage.getItem(storage.ribbonTab) || "")
+  activeRibbonTab: ["home", "view", "tools"].includes(localStorage.getItem(storage.ribbonTab) || "")
     ? localStorage.getItem(storage.ribbonTab)
     : "home",
   thumbPanelVisible: getStoredBool(storage.leftPanelVisible, true),
@@ -415,7 +424,6 @@ const els = {
   ribbonPanels: Array.from(document.querySelectorAll("[data-ribbon-panel]")),
   tabHomeBtn: document.getElementById("tabHomeBtn"),
   tabViewBtn: document.getElementById("tabViewBtn"),
-  tabAnnotateBtn: document.getElementById("tabAnnotateBtn"),
   tabToolsBtn: document.getElementById("tabToolsBtn"),
   openFileBtn: document.getElementById("openFileBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
@@ -425,6 +433,8 @@ const els = {
   nextPageBtn: document.getElementById("nextPageBtn"),
   pageInput: document.getElementById("pageInput"),
   pageCountLabel: document.getElementById("pageCountLabel"),
+  sheetSelectorGroup: document.getElementById("sheetSelectorGroup"),
+  sheetSelect: document.getElementById("sheetSelect"),
   zoomOutBtn: document.getElementById("zoomOutBtn"),
   zoomInBtn: document.getElementById("zoomInBtn"),
   zoomResetBtn: document.getElementById("zoomResetBtn"),
@@ -447,10 +457,6 @@ const els = {
   viewSingleBtn: document.getElementById("viewSingleBtn"),
   viewSpreadBtn: document.getElementById("viewSpreadBtn"),
   viewFocusBtn: document.getElementById("viewFocusBtn"),
-  quickCheckUpdateBtn: document.getElementById("quickCheckUpdateBtn"),
-  quickCopyContactBtn: document.getElementById("quickCopyContactBtn"),
-  quickLangKoBtn: document.getElementById("quickLangKoBtn"),
-  quickLangEnBtn: document.getElementById("quickLangEnBtn"),
   thumbPanel: document.getElementById("thumbPanel"),
   leftResizer: document.getElementById("leftResizer"),
   rightResizer: document.getElementById("rightResizer"),
@@ -512,7 +518,10 @@ function setStatus(message, isError = false) {
 
 function cloneAnnotationBucket(bucket) {
   return {
-    highlights: (bucket?.highlights || []).map((item) => ({ ...item })),
+    highlights: (bucket?.highlights || []).map((item) => ({
+      ...item,
+      rects: Array.isArray(item?.rects) ? item.rects.map((rect) => ({ ...rect })) : undefined
+    })),
     pens: (bucket?.pens || []).map((pen) => ({
       color: pen.color,
       width: pen.width,
@@ -632,12 +641,7 @@ function setActiveRibbonTab(tab, persist = true) {
 }
 
 function updateLanguageQuickButtons() {
-  if (els.quickLangKoBtn) {
-    els.quickLangKoBtn.classList.toggle("active", state.language === "ko");
-  }
-  if (els.quickLangEnBtn) {
-    els.quickLangEnBtn.classList.toggle("active", state.language === "en");
-  }
+  // v1.2.6부터 언어 전환은 상단 설정 메뉴에서만 제공한다.
 }
 
 function applyLanguageToStaticTexts() {
@@ -686,6 +690,7 @@ function applyLanguageToStaticTexts() {
     }
     applyPanelLayout();
     updateFullscreenButtons();
+    updateSheetSelectorUI();
     updateToolbarState();
   } finally {
     state.applyingLanguage = false;
@@ -741,6 +746,40 @@ function normalizeSearchText(text) {
     .trim();
 }
 
+function buildSearchableWithMap(text) {
+  const source = String(text || "");
+  const chars = [];
+  const sourceMap = [];
+  let prevWasSpace = true;
+  for (let i = 0; i < source.length; i += 1) {
+    const lowered = source[i].toLowerCase();
+    if (/\s/.test(lowered)) {
+      if (!prevWasSpace) {
+        chars.push(" ");
+        sourceMap.push(i);
+        prevWasSpace = true;
+      }
+      continue;
+    }
+    chars.push(lowered);
+    sourceMap.push(i);
+    prevWasSpace = false;
+  }
+  while (chars.length > 0 && chars[0] === " ") {
+    chars.shift();
+    sourceMap.shift();
+  }
+  while (chars.length > 0 && chars[chars.length - 1] === " ") {
+    chars.pop();
+    sourceMap.pop();
+  }
+  return {
+    searchable: chars.join(""),
+    sourceMap,
+    sourceLength: source.length
+  };
+}
+
 function fileNameFromPath(filePath) {
   if (!filePath) {
     return "";
@@ -768,10 +807,13 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
     case "ENGINE_MISSING":
       return t("openErrorEngineMissing");
     case "CONVERT_TIMEOUT":
+    case "ENGINE_TIMEOUT":
       return t("openErrorTimeout");
     case "EMPTY_DOCUMENT":
       return fallbackMessage || t("openErrorEmptyDocument");
     case "CONVERT_FAILED":
+      return fallbackMessage || t("openErrorConvert");
+    case "RENDER_ARTIFACT_DETECTED":
       return fallbackMessage || t("openErrorConvert");
     default:
       return fallbackMessage || t("openErrorGeneric");
@@ -780,7 +822,10 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
 
 function normalizeRibbonTab(tab) {
   const value = String(tab || "").toLowerCase();
-  if (value === "home" || value === "view" || value === "annotate" || value === "tools") {
+  if (value === "annotate") {
+    return "tools";
+  }
+  if (value === "home" || value === "view" || value === "tools") {
     return value;
   }
   return "home";
@@ -1030,6 +1075,94 @@ function applyPanelLayout() {
     }
   }
   updateViewActionButtons();
+}
+
+function normalizeSheetMap(sheetMap = []) {
+  if (!Array.isArray(sheetMap)) {
+    return [];
+  }
+  const normalized = [];
+  for (const item of sheetMap) {
+    const sheetName = String(item?.sheetName || "").trim();
+    if (!sheetName) {
+      continue;
+    }
+    const startPage = Number(item?.startPage);
+    const endPage = Number(item?.endPage);
+    normalized.push({
+      sheetName,
+      startPage: Number.isFinite(startPage) && startPage > 0 ? Math.floor(startPage) : null,
+      endPage: Number.isFinite(endPage) && endPage > 0 ? Math.floor(endPage) : null
+    });
+  }
+  return normalized;
+}
+
+function getSheetStartPage(sheet) {
+  if (!sheet) {
+    return null;
+  }
+  if (Number.isFinite(sheet.startPage) && sheet.startPage > 0) {
+    return Math.floor(sheet.startPage);
+  }
+  return null;
+}
+
+function updateSheetSelectorUI() {
+  if (!els.sheetSelectorGroup || !els.sheetSelect) {
+    return;
+  }
+  const sheetMap = normalizeSheetMap(state.sourceSheetMap);
+  const hasUsablePages = sheetMap.some((sheet) => Number.isFinite(sheet.startPage) && sheet.startPage > 0);
+  const showSelector = Boolean(state.pdfDoc) && sheetMap.length > 0;
+  els.sheetSelectorGroup.classList.toggle("hidden", !showSelector);
+  els.sheetSelect.innerHTML = "";
+  if (!showSelector) {
+    return;
+  }
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = t("sheetSelectPlaceholder");
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  els.sheetSelect.appendChild(placeholder);
+
+  sheetMap.forEach((sheet, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    const startPage = getSheetStartPage(sheet);
+    if (startPage) {
+      option.textContent = `${sheet.sheetName} (${startPage}p)`;
+    } else {
+      option.textContent = sheet.sheetName;
+    }
+    if (!hasUsablePages) {
+      option.disabled = true;
+    }
+    els.sheetSelect.appendChild(option);
+  });
+  els.sheetSelect.disabled = !hasUsablePages;
+  if (hasUsablePages) {
+    let selectedValue = "";
+    for (let index = 0; index < sheetMap.length; index += 1) {
+      const sheet = sheetMap[index];
+      const start = getSheetStartPage(sheet);
+      const end = Number.isFinite(sheet.endPage) && sheet.endPage > 0 ? Math.floor(sheet.endPage) : start;
+      if (!start) {
+        continue;
+      }
+      if (state.currentPage >= start && state.currentPage <= end) {
+        selectedValue = String(index);
+        break;
+      }
+    }
+    if (selectedValue) {
+      els.sheetSelect.value = selectedValue;
+    } else {
+      els.sheetSelect.selectedIndex = 0;
+    }
+  }
 }
 
 function normalizeUpdateStage(stage) {
@@ -1385,13 +1518,6 @@ function updateToolbarState() {
   if (els.redoBtn) {
     els.redoBtn.disabled = !hasDoc || state.historyFuture.length === 0;
   }
-  if (els.quickCheckUpdateBtn) {
-    els.quickCheckUpdateBtn.disabled = state.updateBusy;
-  }
-  if (els.quickCopyContactBtn) {
-    els.quickCopyContactBtn.disabled = false;
-  }
-
   els.pageCountLabel.textContent = `/ ${hasDoc ? total : 0}`;
   els.pageInput.value = `${hasDoc ? Math.max(1, currentIndex + 1) : 1}`;
   els.zoomLabel.textContent = `${Math.round(state.scale * 100)}%`;
@@ -1427,6 +1553,7 @@ function updateCurrentPage(pageNum, reasonText = "") {
   state.currentPage = pageNum;
   updateActiveThumbnail();
   updateToolbarState();
+  updateSheetSelectorUI();
   applyPageVisibility();
   if (reasonText) {
     setStatus(reasonText);
@@ -2240,16 +2367,19 @@ function itemRectInViewport(item, viewport) {
 
 function itemSegmentRectInViewport(item, viewport, segmentStart, segmentEnd) {
   const full = itemRectInViewport(item, viewport);
-  const safeLength = Math.max(1, Number(item.searchableLength || item.searchable?.length || item.str?.length || 1));
+  const safeLength = Math.max(1, Number(item.sourceLength || item.searchableLength || item.raw?.length || item.str?.length || 1));
   const startRatio = clamp(segmentStart / safeLength, 0, 1);
   const endRatio = clamp(segmentEnd / safeLength, 0, 1);
-  const left = full.left + full.width * Math.min(startRatio, endRatio);
-  const right = full.left + full.width * Math.max(startRatio, endRatio);
+  const baseLeft = full.left + full.width * Math.min(startRatio, endRatio);
+  const baseRight = full.left + full.width * Math.max(startRatio, endRatio);
+  const insetX = Math.min(2.2, Math.max(0, (baseRight - baseLeft) * 0.08));
+  const bandHeight = Math.max(2, full.height * 0.58);
+  const bandTop = full.top + Math.max(0, (full.height - bandHeight) * 0.42);
   return {
-    left,
-    top: full.top,
-    width: Math.max(2, right - left),
-    height: full.height
+    left: baseLeft + insetX,
+    top: bandTop,
+    width: Math.max(2, baseRight - baseLeft - insetX * 2),
+    height: bandHeight
   };
 }
 
@@ -2265,7 +2395,8 @@ function drawSearchHighlightsForPage(pageNum) {
 
   for (const matchIndex of matchIndexes) {
     const match = state.searchMatches[matchIndex];
-    for (const segment of match.segments || []) {
+    const rects = Array.isArray(match.rects) && match.rects.length ? match.rects : match.segments || [];
+    for (const segment of rects) {
       const itemIndex = segment.itemIndex;
       const item = items[itemIndex];
       if (!item) {
@@ -2302,6 +2433,19 @@ function drawAnnotationsForPage(pageNum, transientDrawing = null) {
   const bucket = getAnnotationBucket(pageNum);
 
   for (const mark of bucket.highlights) {
+    if (Array.isArray(mark.rects) && mark.rects.length > 0) {
+      for (const rect of mark.rects) {
+        const p1 = view.viewport.convertToViewportPoint(rect.x, rect.y);
+        const p2 = view.viewport.convertToViewportPoint(rect.x + rect.width, rect.y + rect.height);
+        const left = Math.min(p1[0], p2[0]);
+        const top = Math.min(p1[1], p2[1]);
+        const width = Math.max(2, Math.abs(p1[0] - p2[0]));
+        const height = Math.max(2, Math.abs(p1[1] - p2[1]));
+        context.fillStyle = "rgba(255, 226, 46, 0.38)";
+        context.fillRect(left, top, width, height);
+      }
+      continue;
+    }
     const p1 = view.viewport.convertToViewportPoint(mark.x1, mark.y1);
     const p2 = view.viewport.convertToViewportPoint(mark.x2, mark.y2);
     const left = Math.min(p1[0], p2[0]);
@@ -2386,6 +2530,70 @@ function cssToPdfPoint(pageNum, cssX, cssY) {
   }
   const [x, y] = view.viewport.convertToPdfPoint(cssX, cssY);
   return { x, y };
+}
+
+function intersectRect(a, b) {
+  const left = Math.max(a.left, b.left);
+  const top = Math.max(a.top, b.top);
+  const right = Math.min(a.left + a.width, b.left + b.width);
+  const bottom = Math.min(a.top + a.height, b.top + b.height);
+  if (right <= left || bottom <= top) {
+    return null;
+  }
+  return {
+    left,
+    top,
+    width: right - left,
+    height: bottom - top
+  };
+}
+
+async function resolveTextHighlightRects(pageNum, firstPoint, lastPoint) {
+  const page = await getPdfPage(pageNum);
+  const rotation = getEffectivePageRotation(page, pageNum);
+  const viewport = page.getViewport({ scale: 1, rotation });
+  const start = viewport.convertToViewportPoint(firstPoint.x, firstPoint.y);
+  const end = viewport.convertToViewportPoint(lastPoint.x, lastPoint.y);
+  const selectionRect = {
+    left: Math.min(start[0], end[0]),
+    top: Math.min(start[1], end[1]),
+    width: Math.max(2, Math.abs(start[0] - end[0])),
+    height: Math.max(2, Math.abs(start[1] - end[1]))
+  };
+
+  const items = await ensureTextItems(pageNum);
+  if (!items.length) {
+    return [];
+  }
+
+  const resolvedRects = [];
+  for (const item of items) {
+    const itemRect = itemRectInViewport(item, viewport);
+    const overlap = intersectRect(selectionRect, itemRect);
+    if (!overlap || overlap.width < 2 || overlap.height < 2) {
+      continue;
+    }
+    const insetX = Math.min(2, overlap.width * 0.08);
+    const bandHeight = Math.max(2, overlap.height * 0.58);
+    const bandTop = overlap.top + Math.max(0, (overlap.height - bandHeight) * 0.42);
+    const bandRect = {
+      left: overlap.left + insetX,
+      top: bandTop,
+      width: Math.max(2, overlap.width - insetX * 2),
+      height: bandHeight
+    };
+    const p1 = viewport.convertToPdfPoint(bandRect.left, bandRect.top);
+    const p2 = viewport.convertToPdfPoint(bandRect.left + bandRect.width, bandRect.top + bandRect.height);
+    const x = Math.min(p1[0], p2[0]);
+    const y = Math.min(p1[1], p2[1]);
+    const width = Math.max(1, Math.abs(p1[0] - p2[0]));
+    const height = Math.max(1, Math.abs(p1[1] - p2[1]));
+    resolvedRects.push({ x, y, width, height });
+    if (resolvedRects.length >= 600) {
+      break;
+    }
+  }
+  return resolvedRects;
 }
 
 function setEditingMode(mode) {
@@ -2513,7 +2721,7 @@ function bindAnnotationEvents(pageNum, annotationCanvas) {
     drawAnnotationsForPage(pageNum, state.drawing);
   });
 
-  annotationCanvas.addEventListener("pointerup", (event) => {
+  annotationCanvas.addEventListener("pointerup", async (event) => {
     if (!state.drawing || state.drawing.pageNum !== pageNum || state.drawing.pointerId !== event.pointerId) {
       return;
     }
@@ -2526,12 +2734,26 @@ function bindAnnotationEvents(pageNum, annotationCanvas) {
       pushHistorySnapshot();
       const first = drawing.points[0];
       const last = drawing.points[drawing.points.length - 1];
-      bucket.highlights.push({
-        x1: first.x,
-        y1: first.y,
-        x2: last.x,
-        y2: last.y
-      });
+      let textRects = [];
+      try {
+        textRects = await resolveTextHighlightRects(pageNum, first, last);
+      } catch (_error) {
+        textRects = [];
+      }
+      if (textRects.length > 0) {
+        bucket.highlights.push({
+          mode: "text",
+          rects: textRects
+        });
+      } else {
+        bucket.highlights.push({
+          mode: "area",
+          x1: first.x,
+          y1: first.y,
+          x2: last.x,
+          y2: last.y
+        });
+      }
       state.saveDirty = true;
     } else if (drawing.type === "pen" && drawing.points.length >= 2) {
       pushHistorySnapshot();
@@ -2554,24 +2776,28 @@ async function ensureTextItems(pageNum) {
   const textContent = await page.getTextContent();
   const items = [];
   for (const item of textContent.items) {
-    const displayText = String(item.str || "").replace(/\s+/g, " ").trim();
+    const rawText = String(item.str || "");
+    const displayText = rawText.replace(/\s+/g, " ").trim();
     if (!displayText) {
       continue;
     }
 
-    const lowered = displayText.toLowerCase();
-    const searchable = lowered;
+    const normalized = buildSearchableWithMap(rawText);
+    const searchable = normalized.searchable;
     if (!searchable) {
       continue;
     }
 
     items.push({
       index: items.length,
+      raw: rawText,
       str: displayText,
       isOcr: false,
-      lower: lowered,
+      lower: displayText.toLowerCase(),
       searchable,
       searchableLength: searchable.length,
+      sourceLength: normalized.sourceLength,
+      sourceMap: normalized.sourceMap,
       width: Number(item.width || 0),
       height: Number(item.height || 0),
       transform: Array.isArray(item.transform) ? [...item.transform] : [1, 0, 0, 1, 0, 0]
@@ -2747,10 +2973,11 @@ async function scrollActiveMatchToCenter(match) {
     return;
   }
   const view = state.pageViews.get(match.pageNum);
-  if (!view || !view.viewport || !match.segments?.length) {
+  const rects = Array.isArray(match.rects) && match.rects.length ? match.rects : match.segments;
+  if (!view || !view.viewport || !rects?.length) {
     return;
   }
-  const firstSegment = match.segments[0];
+  const firstSegment = rects[0];
   const items = state.searchPageCache.get(match.pageNum) || state.textItemsCache.get(match.pageNum) || state.ocrWordCache.get(match.pageNum) || [];
   const item = items[firstSegment.itemIndex];
   if (!item) {
@@ -2815,12 +3042,16 @@ async function performSearch(rawQuery, jumpFirst = true) {
           break;
         }
         const foundEnd = found + queryNeedle.length;
+        const sourceMap = Array.isArray(item.sourceMap) ? item.sourceMap : [];
+        const sourceStart = sourceMap[found] ?? found;
+        const sourceEndIndex = sourceMap[Math.max(foundEnd - 1, found)] ?? Math.max(foundEnd - 1, found);
+        const sourceEnd = sourceEndIndex + 1;
         const hitItemIndexes = [item.index];
         const segments = [
           {
             itemIndex: item.index,
-            startOffset: found,
-            endOffset: foundEnd
+            startOffset: sourceStart,
+            endOffset: sourceEnd
           }
         ];
         const preview = buildSearchPreview(items, hitItemIndexes);
@@ -2829,6 +3060,7 @@ async function performSearch(rawQuery, jumpFirst = true) {
           pageNum,
           itemIndexes: hitItemIndexes,
           segments,
+          rects: segments.map((segment) => ({ ...segment })),
           text: preview || "(검색 결과)"
         });
         if (!state.perPageMatchIndexes.has(pageNum)) {
@@ -3239,6 +3471,24 @@ async function buildEditedPdfBytes() {
     const page = outputDoc.getPage(displayIndex);
 
     for (const mark of annotations.highlights) {
+      if (Array.isArray(mark.rects) && mark.rects.length > 0) {
+        for (const rect of mark.rects) {
+          const width = Number(rect.width || 0);
+          const height = Number(rect.height || 0);
+          if (width < 1 || height < 1) {
+            continue;
+          }
+          page.drawRectangle({
+            x: Number(rect.x || 0),
+            y: Number(rect.y || 0),
+            width,
+            height,
+            color: rgb(1, 0.9, 0.2),
+            opacity: 0.35
+          });
+        }
+        continue;
+      }
       const left = Math.min(mark.x1, mark.x2);
       const bottom = Math.min(mark.y1, mark.y2);
       const width = Math.abs(mark.x1 - mark.x2);
@@ -3394,6 +3644,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   state.sourceExt = meta.sourceExt || ".pdf";
   state.sourceConverted = Boolean(meta.converted);
   state.sourceConvertMode = meta.convertMode || (state.sourceExt === ".pdf" ? "native" : "fallback");
+  state.sourceSheetMap = normalizeSheetMap(meta.sheetMap);
   state.pageOrder = Array.from({ length: pdfDoc.numPages }, (_v, i) => i + 1);
   state.pageCache.clear();
   state.pageRotations.clear();
@@ -3433,6 +3684,7 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   clearHistory();
   closeTextMemoEditor();
   await syncWindowTitle(filePath || "");
+  updateSheetSelectorUI();
 
   els.emptyHint.classList.add("hidden");
   await rebuildPageViews();
@@ -3702,6 +3954,22 @@ function bindToolbarActions() {
     const clampedIndex = clamp(wantedIndex - 1, 0, state.pageOrder.length - 1);
     await goToPage(state.pageOrder[clampedIndex], true);
   });
+  if (els.sheetSelect) {
+    els.sheetSelect.addEventListener("change", async () => {
+      const sheetMap = normalizeSheetMap(state.sourceSheetMap);
+      const selectedIndex = Number.parseInt(els.sheetSelect.value, 10);
+      if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= sheetMap.length) {
+        return;
+      }
+      const sheet = sheetMap[selectedIndex];
+      const startPage = getSheetStartPage(sheet);
+      if (!startPage || !state.pageOrder.includes(startPage)) {
+        return;
+      }
+      await goToPage(startPage, true);
+      setStatus(t("sheetJumped", { sheet: sheet.sheetName }));
+    });
+  }
 
   els.zoomInBtn.addEventListener("click", () => zoomTo(state.scale * 1.12, null, { prioritizeVisible: true }).catch(() => {}));
   els.zoomOutBtn.addEventListener("click", () => zoomTo(state.scale / 1.12, null, { prioritizeVisible: true }).catch(() => {}));
@@ -3768,33 +4036,6 @@ function bindToolbarActions() {
   els.toggleThumbInFullscreenBtn.addEventListener("click", () => {
     toggleLeftPanelVisibility();
   });
-
-  if (els.quickCheckUpdateBtn) {
-    els.quickCheckUpdateBtn.addEventListener("click", async () => {
-      const ok = await checkForUpdatesFromUI();
-      if (ok) {
-        setStatus(t("updateStarted"));
-      }
-    });
-  }
-  if (els.quickCopyContactBtn) {
-    els.quickCopyContactBtn.addEventListener("click", async () => {
-      await window.lookupAPI.copyText("lamsaiku65@gmail.com");
-      setStatus(t("copiedContact"));
-    });
-  }
-  if (els.quickLangKoBtn) {
-    els.quickLangKoBtn.addEventListener("click", async () => {
-      await setLanguage("ko", true);
-      setStatus(t("languageChangedKo"));
-    });
-  }
-  if (els.quickLangEnBtn) {
-    els.quickLangEnBtn.addEventListener("click", async () => {
-      await setLanguage("en", true);
-      setStatus(t("languageChangedEn"));
-    });
-  }
 
   if (els.textMemoAddBtn) {
     els.textMemoAddBtn.addEventListener("click", () => commitTextMemoFromEditor());
@@ -4000,6 +4241,10 @@ function bindMainProcessEvents() {
       "set-language-en": async () => {
         await setLanguage("en", true);
         setStatus(t("languageChangedEn"));
+      },
+      "show-version-info": async () => {
+        const version = state.appVersion || (await window.lookupAPI.getAppVersion()) || "-";
+        setStatus(`lookup v${version}`);
       }
     };
     const fn = map[action];
