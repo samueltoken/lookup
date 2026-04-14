@@ -1,6 +1,6 @@
 {
   "name": "lookup",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
