@@ -6,13 +6,19 @@ import https from "node:https";
 
 const OWNER = "samueltoken";
 const REPO = "lookup";
-const TARGET_TAG = "v1.3.0";
-const TARGET_NAME = "lookup v1.3.0";
+const PACKAGE_PATH = path.resolve("package.json");
+const packageMeta = JSON.parse(fs.readFileSync(PACKAGE_PATH, "utf8"));
+const TARGET_VERSION = String(packageMeta.version || "").trim();
+if (!TARGET_VERSION) {
+  throw new Error("package.json version is empty.");
+}
+const TARGET_TAG = `v${TARGET_VERSION}`;
+const TARGET_NAME = `lookup v${TARGET_VERSION}`;
 
 const REPAIR_TAGS = ["v1.1.7", "v1.2.0", "v1.2.1", "v1.2.2", "v1.2.3", "v1.2.4", "v1.2.5", "v1.2.6", "v1.2.7", "v1.2.8"];
 const RELEASE_NOTES_DIR = path.resolve("release-notes");
 const RELEASE_DIR = path.resolve("release");
-const TARGET_ASSETS = ["lookup-Setup-1.3.0.exe", "latest.yml", "lookup-Setup-1.3.0.exe.blockmap"];
+const TARGET_ASSETS = [`lookup-Setup-${TARGET_VERSION}.exe`, "latest.yml", `lookup-Setup-${TARGET_VERSION}.exe.blockmap`];
 
 function getGitCredential() {
   const result = spawnSync("git", ["credential", "fill"], {
