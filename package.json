@@ -1,6 +1,6 @@
 {
   "name": "lookup",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
@@ -60,6 +60,10 @@
       {
         "from": "build/libreoffice",
         "to": "libreoffice"
+      },
+      {
+        "from": "build/security",
+        "to": "security"
       }
     ],
     "files": [

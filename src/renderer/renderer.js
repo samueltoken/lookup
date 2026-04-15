@@ -411,6 +411,8 @@ const state = {
   thumbRerenderTimer: 0,
   pageRenderTasks: new Map(),
   thumbRenderTasks: new Map(),
+  documentOpenInProgress: false,
+  lastOpenPath: "",
   historyPast: [],
   historyFuture: [],
   historyRestoring: false,
@@ -464,6 +466,10 @@ const els = {
   viewerPanel: document.getElementById("viewerPanel"),
   pagesContainer: document.getElementById("pagesContainer"),
   emptyHint: document.getElementById("emptyHint"),
+  convertOverlay: document.getElementById("convertOverlay"),
+  convertOverlayTitle: document.getElementById("convertOverlayTitle"),
+  convertOverlayMessage: document.getElementById("convertOverlayMessage"),
+  convertRetryBtn: document.getElementById("convertRetryBtn"),
   fullscreenMiniBar: document.getElementById("fullscreenMiniBar"),
   toggleFullscreenViewModeBtn: document.getElementById("toggleFullscreenViewModeBtn"),
   toggleThumbInFullscreenBtn: document.getElementById("toggleThumbInFullscreenBtn"),
@@ -514,6 +520,52 @@ function toUint8Array(raw) {
 function setStatus(message, isError = false) {
   els.statusText.textContent = message;
   els.statusText.style.color = isError ? "#d73333" : "";
+}
+
+function showConvertOverlay(title, message, retryVisible = false) {
+  if (!els.convertOverlay) {
+    return;
+  }
+  if (els.convertOverlayTitle) {
+    els.convertOverlayTitle.textContent = title || "문서를 여는 중입니다.";
+  }
+  if (els.convertOverlayMessage) {
+    els.convertOverlayMessage.textContent = message || "잠시만 기다려주세요.";
+  }
+  if (els.convertRetryBtn) {
+    els.convertRetryBtn.classList.toggle("hidden", !retryVisible);
+  }
+  els.convertOverlay.classList.remove("hidden");
+}
+
+function hideConvertOverlay() {
+  if (!els.convertOverlay) {
+    return;
+  }
+  els.convertOverlay.classList.add("hidden");
+  if (els.convertRetryBtn) {
+    els.convertRetryBtn.classList.add("hidden");
+  }
+}
+
+function mapConvertStageLabel(stage) {
+  const normalized = String(stage || "").trim();
+  if (!normalized) {
+    return "문서를 여는 중입니다.";
+  }
+  if (normalized.includes("엔진")) {
+    return "한글 문서를 여는 중입니다.";
+  }
+  if (normalized.includes("변환")) {
+    return "원본 레이아웃 변환을 시도합니다.";
+  }
+  if (normalized.includes("검사")) {
+    return "변환 결과를 확인하고 있습니다.";
+  }
+  if (normalized.includes("표시")) {
+    return "문서를 화면에 표시합니다.";
+  }
+  return normalized;
 }
 
 function cloneAnnotationBucket(bucket) {
@@ -812,6 +864,8 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
     case "EMPTY_DOCUMENT":
       return fallbackMessage || t("openErrorEmptyDocument");
     case "CONVERT_FAILED":
+    case "INVALID_CONVERTED_PDF":
+    case "PAGE_COUNT_ZERO":
       return fallbackMessage || t("openErrorConvert");
     case "RENDER_ARTIFACT_DETECTED":
       return fallbackMessage || t("openErrorConvert");
@@ -1308,6 +1362,7 @@ function parseReleaseNotesTree(releaseNotes) {
   const seenItems = new Set();
   let currentSection = null;
   let lastTopItem = null;
+  let detectedVersion = "";
 
   const ensureSection = (title) => {
     const normalizedTitle = cleanReleaseNoteLineText(title || t("updateNotesSectionGeneral")) || t("updateNotesSectionGeneral");
@@ -1322,12 +1377,46 @@ function parseReleaseNotesTree(releaseNotes) {
     return next;
   };
 
+  const ensureTopItem = (section, text, kind = "item") => {
+    if (!section || !text) {
+      return null;
+    }
+    const key = `${section.title.toLowerCase()}::top::${kind}::${text.toLowerCase()}`;
+    if (seenItems.has(key)) {
+      return section.items.find((entry) => entry.text === text && entry.kind === kind) || null;
+    }
+    seenItems.add(key);
+    const next = { text, children: [], kind };
+    section.items.push(next);
+    return next;
+  };
+
   for (const rawLine of rawLines) {
+    const indentSize = rawLine.match(/^\s*/)?.[0].length || 0;
     const trimmed = rawLine.trim();
-    const headingMatch = trimmed.match(/^#{1,6}\s+(.+)$/);
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
-      ensureSection(headingMatch[1]);
-      lastTopItem = null;
+      const level = headingMatch[1].length;
+      const headingText = cleanReleaseNoteLineText(headingMatch[2]);
+      if (!headingText) {
+        continue;
+      }
+      if (level === 1) {
+        const versionMatch = headingText.match(/v?(\d+\.\d+\.\d+)/i);
+        if (versionMatch) {
+          detectedVersion = versionMatch[1];
+        }
+        lastTopItem = null;
+        continue;
+      }
+      if (level === 2) {
+        ensureSection(headingText);
+        lastTopItem = null;
+        continue;
+      }
+      const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
+      const subsection = ensureTopItem(section, headingText, "subsection");
+      lastTopItem = subsection;
       continue;
     }
 
@@ -1339,7 +1428,6 @@ function parseReleaseNotesTree(releaseNotes) {
       continue;
     }
 
-    const indentSize = rawLine.match(/^\s*/)?.[0].length || 0;
     const listMatch = trimmed.match(/^([-*•]|\d+[.)])\s+(.+)$/);
     if (!listMatch && indentSize === 0 && /[:：]\s*$/.test(trimmed) && candidateTitle.length <= 48) {
       ensureSection(candidateTitle);
@@ -1354,20 +1442,14 @@ function parseReleaseNotesTree(releaseNotes) {
       const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
       const depth = Math.max(0, Math.floor(indentSize / 2));
       if (depth > 0 && lastTopItem) {
-        const childKey = `${section.title.toLowerCase()}::child::${text.toLowerCase()}`;
+        const childKey = `${section.title.toLowerCase()}::child::${lastTopItem.text.toLowerCase()}::${text.toLowerCase()}`;
         if (!seenItems.has(childKey)) {
           seenItems.add(childKey);
           lastTopItem.children.push(text);
         }
-      } else {
-        const itemKey = `${section.title.toLowerCase()}::top::${text.toLowerCase()}`;
-        if (seenItems.has(itemKey)) {
-          continue;
-        }
-        seenItems.add(itemKey);
-        lastTopItem = { text, children: [] };
-        section.items.push(lastTopItem);
+        continue;
       }
+      lastTopItem = ensureTopItem(section, text, "item");
       continue;
     }
 
@@ -1376,13 +1458,7 @@ function parseReleaseNotesTree(releaseNotes) {
       continue;
     }
     const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
-    const plainKey = `${section.title.toLowerCase()}::plain::${plainText.toLowerCase()}`;
-    if (seenItems.has(plainKey)) {
-      continue;
-    }
-    seenItems.add(plainKey);
-    lastTopItem = { text: plainText, children: [] };
-    section.items.push(lastTopItem);
+    lastTopItem = ensureTopItem(section, plainText, "item");
   }
 
   const normalizedSections = sections
@@ -1393,7 +1469,10 @@ function parseReleaseNotesTree(releaseNotes) {
     .filter((section) => section.items.length > 0)
     .slice(0, 8);
 
-  return normalizedSections;
+  return {
+    detectedVersion,
+    sections: normalizedSections
+  };
 }
 
 function hideUpdateNotesModal() {
@@ -1407,8 +1486,10 @@ function showUpdateNotesModal(version, releaseNotes) {
   if (!els.updateNotesModal || !els.updateNotesContent) {
     return;
   }
-  const sections = parseReleaseNotesTree(releaseNotes);
-  els.updateNotesVersion.textContent = version ? `v${version}` : "";
+  const parsed = parseReleaseNotesTree(releaseNotes);
+  const sections = Array.isArray(parsed?.sections) ? parsed.sections : [];
+  const displayVersion = String(version || parsed?.detectedVersion || "").replace(/^v/i, "");
+  els.updateNotesVersion.textContent = displayVersion ? `v${displayVersion}` : "";
   els.updateNotesContent.innerHTML = "";
   if (!sections.length) {
     const fallbackList = document.createElement("ul");
@@ -1431,7 +1512,7 @@ function showUpdateNotesModal(version, releaseNotes) {
       list.className = "update-notes-list";
       for (const item of section.items) {
         const li = document.createElement("li");
-        li.className = "update-notes-item";
+        li.className = item.kind === "subsection" ? "update-notes-item update-notes-subsection" : "update-notes-item";
         li.textContent = item.text;
         if (Array.isArray(item.children) && item.children.length > 0) {
           const subList = document.createElement("ul");
@@ -3685,6 +3766,8 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
   closeTextMemoEditor();
   await syncWindowTitle(filePath || "");
   updateSheetSelectorUI();
+  state.documentOpenInProgress = false;
+  hideConvertOverlay();
 
   els.emptyHint.classList.add("hidden");
   await rebuildPageViews();
@@ -3711,6 +3794,9 @@ async function loadDocumentFromPath(filePath) {
 
   const resolvedPath = filePath.trim();
   const ext = getFileExt(resolvedPath);
+  state.documentOpenInProgress = true;
+  state.lastOpenPath = resolvedPath;
+  showConvertOverlay("한글 문서를 여는 중입니다.", "원본 레이아웃 변환을 시도합니다.");
   setStatus(state.language === "en" ? "Opening document..." : "문서를 열고 있습니다...");
 
   try {
@@ -3739,12 +3825,14 @@ async function loadDocumentFromPath(filePath) {
     throw new Error(mapOpenErrorMessage(payload?.errorCode, payload?.message));
   } catch (error) {
     const fallbackMessage = mapOpenErrorMessage("", error?.message || "");
+    state.documentOpenInProgress = false;
     setStatus(
       state.language === "en"
         ? `Failed to open file: ${fallbackMessage}`
         : `파일 열기 실패: ${fallbackMessage}`,
       true
     );
+    showConvertOverlay("문서를 열지 못했습니다.", fallbackMessage, true);
     if (!state.pdfDoc) {
       els.emptyHint.classList.remove("hidden");
     }
@@ -4054,6 +4142,15 @@ function bindToolbarActions() {
       }
     });
   }
+  if (els.convertRetryBtn) {
+    els.convertRetryBtn.addEventListener("click", async () => {
+      if (!state.lastOpenPath) {
+        hideConvertOverlay();
+        return;
+      }
+      await loadDocumentFromPath(state.lastOpenPath);
+    });
+  }
   if (els.updateNotesCloseBtn) {
     els.updateNotesCloseBtn.addEventListener("click", () => hideUpdateNotesModal());
   }
@@ -4331,6 +4428,11 @@ function bindMainProcessEvents() {
       }
       const message = String(payload.message || "").trim();
       const stage = String(payload.stage || "").trim();
+      if (state.documentOpenInProgress) {
+        const title = mapConvertStageLabel(stage);
+        const detail = message || "잠시만 기다려주세요.";
+        showConvertOverlay(title, detail, false);
+      }
       if (message) {
         setStatus(message);
         return;
