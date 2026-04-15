@@ -30,6 +30,10 @@ let hwpJsMod = null;
 let readHwpxDocumentFn = null;
 let pdfToPrinterMod = null;
 let nodePdfJsModPromise = null;
+let hancomComAvailabilityCache = {
+  checkedAt: 0,
+  available: false
+};
 
 const menuText = {
   ko: {
@@ -94,10 +98,11 @@ function mt(key) {
 const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"]);
 const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"]);
 const HWP_EXTENSIONS = new Set([".hwp", ".hwpx"]);
-const CONVERT_CACHE_SCHEMA_VERSION = "v5";
-const HWP_QUALITY_SELECTOR_VERSION = "v2";
-const HWP_SELECTION_META_VERSION = "v2";
+const CONVERT_CACHE_SCHEMA_VERSION = "v6";
+const HWP_QUALITY_SELECTOR_VERSION = "v3";
+const HWP_SELECTION_META_VERSION = "v3";
 const FALLBACK_CACHE_TTL_MS = 45 * 60 * 1000;
+const HWPJS_SELECTOR_META_TTL_MS = 20 * 60 * 1000;
 const APP_RELEASE_VERSION = String(packageMeta?.version || app.getVersion() || "0.0.0");
 pendingDocumentToOpen = extractDocumentPath(process.argv);
 
@@ -628,9 +633,11 @@ function getConversionEngineToken(convertMode = "fallback") {
     case "libreoffice":
       return "libreoffice-v1";
     case "hwp-print-pdf":
-      return `hancomcom-print-v2-${HWP_QUALITY_SELECTOR_VERSION}`;
+      return `hancomcom-print-v3-${HWP_QUALITY_SELECTOR_VERSION}`;
     case "hwp-saveas":
-      return `hancomcom-saveas-v2-${HWP_QUALITY_SELECTOR_VERSION}`;
+      return `hancomcom-saveas-v3-${HWP_QUALITY_SELECTOR_VERSION}`;
+    case "hwp-converter-exe":
+      return `hancom-converter-exe-v1-${HWP_QUALITY_SELECTOR_VERSION}`;
     case "hwp-layout":
       return "hancomcom-legacy-v1";
     case "hwpjs-html":
@@ -671,6 +678,26 @@ function createHwpSelectionMetaPath(sourcePath) {
   return path.join(ensureConvertedDir(), `${baseName}-${ext}-hwp-selector-${digest}.json`);
 }
 
+function findCandidateScoreRow(candidateScores, mode) {
+  if (!Array.isArray(candidateScores)) {
+    return null;
+  }
+  return candidateScores.find((entry) => String(entry?.mode || "") === String(mode || "")) || null;
+}
+
+function hasInvalidSelectorScore(candidateScores, selectedMode) {
+  const selectedScore = findCandidateScoreRow(candidateScores, selectedMode);
+  if (!selectedScore) {
+    return true;
+  }
+  const inspected = Boolean(selectedScore.inspected);
+  const finalScore = Number(selectedScore.finalScore ?? selectedScore.score ?? 0);
+  if (!inspected) {
+    return true;
+  }
+  return !Number.isFinite(finalScore) || finalScore <= 0;
+}
+
 function readHwpSelectionMeta(sourcePath) {
   try {
     const metaPath = createHwpSelectionMetaPath(sourcePath);
@@ -695,7 +722,13 @@ function readHwpSelectionMeta(sourcePath) {
       warningMessage: String(parsed?.warningMessage || ""),
       fallbackReason: String(parsed?.fallbackReason || ""),
       analysisMode: String(parsed?.analysisMode || "quick"),
-      candidateScores: Array.isArray(parsed?.candidateScores) ? parsed.candidateScores : []
+      candidateScores: Array.isArray(parsed?.candidateScores) ? parsed.candidateScores : [],
+      candidateFailures: Array.isArray(parsed?.candidateFailures) ? parsed.candidateFailures : [],
+      pageCount: Number(parsed?.pageCount || 0),
+      artifactScore: Number(parsed?.artifactScore || 0),
+      engineVersion: String(parsed?.engineVersion || ""),
+      sourceSignature,
+      updatedAt: String(parsed?.updatedAt || "")
     };
   } catch (_error) {
     return null;
@@ -714,6 +747,10 @@ function writeHwpSelectionMeta(sourcePath, payload = {}) {
       fallbackReason: String(payload.fallbackReason || ""),
       analysisMode: String(payload.analysisMode || "quick"),
       candidateScores: Array.isArray(payload.candidateScores) ? payload.candidateScores : [],
+      candidateFailures: Array.isArray(payload.candidateFailures) ? payload.candidateFailures : [],
+      pageCount: Number(payload.pageCount || 0),
+      artifactScore: Number(payload.artifactScore || 0),
+      engineVersion: String(payload.engineVersion || ""),
       updatedAt: new Date().toISOString()
     };
     fs.writeFileSync(metaPath, JSON.stringify(entry, null, 2), "utf8");
@@ -956,6 +993,61 @@ function isTimeoutResult(result) {
   return Boolean(result.timedOut) || /timed out|timeout/i.test(String(result.error || result.stderr || ""));
 }
 
+async function detectHancomComAvailability(forceCheck = false) {
+  const now = Date.now();
+  if (!forceCheck && now - hancomComAvailabilityCache.checkedAt < 60 * 1000) {
+    return hancomComAvailabilityCache.available;
+  }
+  const probe = await runPowerShellAsync(
+    "$h=$null; try { $h = New-Object -ComObject HWPFrame.HwpObject; '1' } catch { '0' } finally { if ($h -ne $null) { try { $h.Quit() | Out-Null } catch {} } }",
+    12000
+  );
+  const available = probe.ok && String(probe.stdout || "").includes("1");
+  hancomComAvailabilityCache = {
+    checkedAt: now,
+    available
+  };
+  return available;
+}
+
+function isNativeHwpMode(mode) {
+  return mode === "hwp-saveas" || mode === "hwp-print-pdf" || mode === "hwp-converter-exe";
+}
+
+function getHwpModePriority(mode) {
+  switch (String(mode || "")) {
+    case "hwp-saveas":
+      return 5;
+    case "hwp-print-pdf":
+      return 4;
+    case "hwp-converter-exe":
+      return 3;
+    case "hwpjs-html":
+      return 2;
+    case "fallback":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function detectHwpRunFailureCode(runResult) {
+  const merged = `${String(runResult?.stderr || "")} ${String(runResult?.error || "")}`.toLowerCase();
+  if (!runResult) {
+    return "";
+  }
+  if (isTimeoutResult(runResult)) {
+    return "ENGINE_TIMEOUT";
+  }
+  if (runResult.missingEngine || /security_module_missing|class not registered|cannot find|not found/.test(merged)) {
+    return "ENGINE_MISSING";
+  }
+  if (/artifact|booklet/.test(merged)) {
+    return "RENDER_ARTIFACT_DETECTED";
+  }
+  return "CONVERT_FAILED";
+}
+
 function buildConversionWarning(sourceExt, engineMessage, hint) {
   const extLabel = String(sourceExt || "").replace(".", "").toUpperCase();
   const details = String(engineMessage || "").trim();
@@ -1168,6 +1260,32 @@ function extractHorizontalSegmentsFromOperatorList(pdfjsLib, operatorList, pageW
   return segments;
 }
 
+async function getPdfPageCount(pdfPath) {
+  if (!pdfPath || !fs.existsSync(pdfPath)) {
+    return 0;
+  }
+  try {
+    const pdfjsLib = await ensureNodePdfJs();
+    const loadingTask = pdfjsLib.getDocument({
+      url: pathToFileURL(pdfPath).href,
+      disableWorker: true,
+      stopAtErrors: false,
+      useSystemFonts: true
+    });
+    const doc = await loadingTask.promise;
+    const pageCount = Number(doc.numPages || 0);
+    await doc.destroy();
+    try {
+      await loadingTask.destroy();
+    } catch (_error) {
+      // ignore cleanup failure
+    }
+    return Number.isFinite(pageCount) ? pageCount : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
 async function analyzeHwpPdfQuality(pdfPath, options = {}) {
   const analysisMode = String(options.analysisMode || "full").toLowerCase() === "quick" ? "quick" : "full";
   const maxPages = Number(options.maxPages || (analysisMode === "quick" ? 1 : 2));
@@ -1177,6 +1295,7 @@ async function analyzeHwpPdfQuality(pdfPath, options = {}) {
       analysisMode,
       score: 0,
       metrics: {
+        pageCount: 0,
         longLineCount: 0,
         overlapLineCount: 0,
         rasterLineHitCount: 0,
@@ -1267,6 +1386,7 @@ async function analyzeHwpPdfQuality(pdfPath, options = {}) {
       analysisMode,
       score: finalScore,
       metrics: {
+        pageCount: Number(doc.numPages || 0),
         longLineCount,
         overlapLineCount,
         rasterLineHitCount,
@@ -1285,6 +1405,7 @@ async function analyzeHwpPdfQuality(pdfPath, options = {}) {
       analysisMode,
       score: 0,
       metrics: {
+        pageCount: 0,
         longLineCount: 0,
         overlapLineCount: 0,
         rasterLineHitCount: 0,
@@ -1301,23 +1422,44 @@ async function analyzeHwpPdfQuality(pdfPath, options = {}) {
 }
 
 function chooseBestHwpCandidate(candidates) {
-  const valid = candidates.filter((candidate) => candidate.available);
+  const valid = candidates.filter((candidate) => candidate.available && candidate.selectionEligible !== false);
   if (!valid.length) {
     return null;
   }
-  valid.sort((a, b) => {
+  const native = valid.filter((candidate) => isNativeHwpMode(candidate.mode));
+  const pool = native.length ? native : valid;
+  pool.sort((a, b) => {
+    if (b.qualityScore !== a.qualityScore) {
+      return b.qualityScore - a.qualityScore;
+    }
     if (b.score !== a.score) {
       return b.score - a.score;
     }
-    if (a.mode === "hwp-saveas" && b.mode !== "hwp-saveas") {
-      return -1;
+    if (getHwpModePriority(b.mode) !== getHwpModePriority(a.mode)) {
+      return getHwpModePriority(b.mode) - getHwpModePriority(a.mode);
     }
-    if (b.mode === "hwp-saveas" && a.mode !== "hwp-saveas") {
-      return 1;
-    }
-    return 0;
+    return Number(b.pageCount || 0) - Number(a.pageCount || 0);
   });
-  return valid[0];
+  return pool[0];
+}
+
+function applyHwpPageCountGate(candidates) {
+  const available = candidates.filter((candidate) => candidate.available && Number(candidate.pageCount || 0) > 0);
+  if (!available.length) {
+    return;
+  }
+  const maxPageCount = Math.max(...available.map((candidate) => Number(candidate.pageCount || 0)));
+  if (!Number.isFinite(maxPageCount) || maxPageCount < 2) {
+    return;
+  }
+  const minAllowed = Math.max(2, Math.ceil(maxPageCount * 0.8));
+  for (const candidate of available) {
+    if (Number(candidate.pageCount || 0) < minAllowed) {
+      candidate.selectionEligible = false;
+      candidate.excludedReason = "PAGE_COUNT_LOW";
+      candidate.qualityScore = clampNumber(Number(candidate.qualityScore || candidate.score || 0) - 45, 0, 100);
+    }
+  }
 }
 
 async function convertWithWordCom(sourcePath, outputPdfPath) {
@@ -1391,7 +1533,17 @@ async function convertWithHancomComPrintPdf(sourcePath, outputPdfPath, ext = ".h
     "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
     "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
     "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
     "    )",
     "    foreach ($candidate in $candidates) {",
     "      if ($candidate -and (Test-Path $candidate)) {",
@@ -1472,7 +1624,17 @@ async function convertWithHancomComSaveAs(sourcePath, outputPdfPath, ext = ".hwp
     "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
     "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
     "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
+    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
     "    )",
     "    foreach ($candidate in $candidates) {",
     "      if ($candidate -and (Test-Path $candidate)) {",
@@ -1504,6 +1666,71 @@ async function convertWithHancomComSaveAs(sourcePath, outputPdfPath, ext = ".hwp
     "if (-not (Test-Path " + output + ")) { throw 'hwp_export_failed' }"
   ].join("; ");
   return await runPowerShellAsync(script, 90000);
+}
+
+function findHancomConverterExecutable() {
+  const roots = [
+    process.env["ProgramFiles"] || "C:\\Program Files",
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)"
+  ];
+  const relativeCandidates = [
+    "HNC\\Office 2024\\HOffice120\\Bin\\HpdfHwpConverter.exe",
+    "HNC\\Office 2022\\HOffice120\\Bin\\HpdfHwpConverter.exe",
+    "HNC\\Office 2020\\HOffice110\\Bin\\HpdfHwpConverter.exe",
+    "Hancom\\Office 2024\\HOffice120\\Bin\\HpdfHwpConverter.exe",
+    "Hancom\\Office 2022\\HOffice120\\Bin\\HpdfHwpConverter.exe",
+    "Hancom\\Office 2020\\HOffice110\\Bin\\HpdfHwpConverter.exe",
+    "Hancom\\HOffice\\Bin\\HpdfHwpConverter.exe",
+    "HNC\\HOffice\\Bin\\HpdfHwpConverter.exe",
+    "Hancom\\HOffice\\Bin\\HwpConverter.exe",
+    "HNC\\HOffice\\Bin\\HwpConverter.exe"
+  ];
+  for (const root of roots) {
+    for (const relPath of relativeCandidates) {
+      const candidate = path.join(root, relPath);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return "";
+}
+
+async function convertWithHancomConverterExe(sourcePath, outputPdfPath) {
+  const converterExe = findHancomConverterExecutable();
+  if (!converterExe) {
+    return {
+      ok: false,
+      missingEngine: true,
+      stderr: "hancom_converter_missing"
+    };
+  }
+
+  const attempts = [
+    [sourcePath, outputPdfPath],
+    ["-i", sourcePath, "-o", outputPdfPath],
+    ["/i", sourcePath, "/o", outputPdfPath],
+    ["--input", sourcePath, "--output", outputPdfPath],
+    ["/input", sourcePath, "/output", outputPdfPath]
+  ];
+
+  for (const args of attempts) {
+    const result = await runProcess(converterExe, args, 90000);
+    if (result.ok && fs.existsSync(outputPdfPath)) {
+      return {
+        ok: true,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+        error: ""
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    stderr: "hancom_converter_failed",
+    error: "hancom_converter_failed"
+  };
 }
 
 async function convertWithLibreOffice(sourcePath, outputPdfPath) {
@@ -1705,10 +1932,63 @@ ${raw}
 </html>`;
 }
 
+function analyzeHwpJsMarkdownArtifacts(hwpjs, rawBuffer) {
+  try {
+    const markdownResult = hwpjs.toMarkdown(rawBuffer);
+    const markdownRaw =
+      typeof markdownResult === "string"
+        ? markdownResult
+        : typeof markdownResult?.markdown === "string"
+          ? markdownResult.markdown
+          : "";
+    if (!markdownRaw) {
+      return {
+        inspected: false,
+        totalChars: 0,
+        strikeChars: 0,
+        strikeSegments: 0,
+        strikeRatio: 0
+      };
+    }
+    let strikeChars = 0;
+    let strikeSegments = 0;
+    const strikeRegex = /~~([^~]+)~~/g;
+    let match = null;
+    while ((match = strikeRegex.exec(markdownRaw)) !== null) {
+      strikeSegments += 1;
+      strikeChars += String(match[1] || "").replace(/\s+/g, "").length;
+    }
+    const plainChars = markdownRaw
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`[^`]*`/g, " ")
+      .replace(/[#>*_\-\[\]\(\)!]/g, " ")
+      .replace(/\s+/g, "")
+      .length;
+    const totalChars = Math.max(plainChars, 0);
+    const strikeRatio = totalChars > 0 ? clampNumber(strikeChars / totalChars, 0, 1) : 0;
+    return {
+      inspected: true,
+      totalChars,
+      strikeChars,
+      strikeSegments,
+      strikeRatio
+    };
+  } catch (_error) {
+    return {
+      inspected: false,
+      totalChars: 0,
+      strikeChars: 0,
+      strikeSegments: 0,
+      strikeRatio: 0
+    };
+  }
+}
+
 async function convertHwpToPdfWithHwpJs(sourcePath, outputPdfPath) {
   try {
     const hwpjs = ensureHwpJsModule();
     const raw = fs.readFileSync(sourcePath);
+    const markdownArtifact = analyzeHwpJsMarkdownArtifacts(hwpjs, raw);
     const htmlResult = hwpjs.toHtml(raw);
     const htmlRaw =
       typeof htmlResult === "string"
@@ -1722,7 +2002,10 @@ async function convertHwpToPdfWithHwpJs(sourcePath, outputPdfPath) {
     }
     const pdfBuffer = await htmlToPdfBuffer(html);
     await fsp.writeFile(outputPdfPath, pdfBuffer);
-    return { ok: true };
+    return {
+      ok: true,
+      markdownArtifact
+    };
   } catch (error) {
     return { ok: false, reason: error?.message || "hwpjs_convert_failed" };
   }
@@ -2041,8 +2324,12 @@ async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analys
       mode,
       path: pdfPath,
       available: false,
+      selectionEligible: false,
       fromCache: Boolean(fromCache),
       runResult: runResult || null,
+      failureCode: detectHwpRunFailureCode(runResult),
+      pageCount: 0,
+      artifactScore: 100,
       analysis: {
         inspected: false,
         analysisMode,
@@ -2061,7 +2348,8 @@ async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analys
         }
       },
       bookletLike: false,
-      score: 0
+      score: 0,
+      qualityScore: 0
     };
   }
   const normalizedMode = String(analysisMode || "full").toLowerCase() === "quick" ? "quick" : "full";
@@ -2069,23 +2357,47 @@ async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analys
     analysisMode: normalizedMode,
     maxPages: normalizedMode === "quick" ? 1 : 2
   });
+  const pageCount = Number(analysis?.metrics?.pageCount || (await getPdfPageCount(pdfPath)) || 0);
   const bookletLike = Boolean(analysis?.metrics?.bookletLikePages > 0 || (await isLikelyBookletPdf(pdfPath)));
+  const overlapLineCount = Number(analysis?.metrics?.overlapLineCount || 0);
+  const rasterLineHitCount = Number(analysis?.metrics?.rasterLineHitCount || 0);
+  const textLinePierceRatio = Number(analysis?.metrics?.textLinePierceRatio || 0);
+  const markdownArtifact = runResult?.markdownArtifact || null;
+  let artifactScore = clampNumber(
+    overlapLineCount * 16 + rasterLineHitCount * 12 + textLinePierceRatio * 75 + (bookletLike ? 28 : 0),
+    0,
+    100
+  );
+  if (mode === "hwpjs-html" && markdownArtifact?.inspected) {
+    const strikeRatio = Number(markdownArtifact.strikeRatio || 0);
+    const strikeSegments = Number(markdownArtifact.strikeSegments || 0);
+    artifactScore = clampNumber(artifactScore + strikeRatio * 95 + Math.min(24, strikeSegments * 0.8), 0, 100);
+  }
   let score = Number(analysis?.score || 0);
   if (bookletLike) {
     score = Math.max(0, score - 30);
   }
   if (mode === "hwp-saveas") {
-    score += 1;
+    score += 2;
   }
+  if (mode === "hwpjs-html") {
+    score = Math.max(0, score - 22);
+  }
+  const qualityScore = clampNumber(score - artifactScore * 0.58, 0, 100);
   return {
     mode,
     path: pdfPath,
     available: true,
+    selectionEligible: true,
     fromCache: Boolean(fromCache),
     runResult: runResult || null,
+    failureCode: "",
+    pageCount,
+    artifactScore: clampNumber(artifactScore, 0, 100),
     analysis,
     bookletLike,
-    score: clampNumber(score, 0, 100)
+    score: clampNumber(score, 0, 100),
+    qualityScore
   };
 }
 
@@ -2093,20 +2405,21 @@ function buildHwpSelectionWarning(selected, candidates) {
   if (!selected) {
     return "";
   }
-  if (selected.mode === "hwp-print-pdf" && selected.score >= 70) {
-    return "";
+  const hasPageCountReplacement = candidates.some((candidate) => candidate.excludedReason === "PAGE_COUNT_LOW");
+  if (hasPageCountReplacement) {
+    return "페이지 수가 비정상이라 더 안전한 변환 결과로 교체했습니다.";
   }
-  const printCandidate = candidates.find((candidate) => candidate.mode === "hwp-print-pdf");
-  if (selected.mode === "hwp-saveas" && printCandidate?.available) {
-    if (printCandidate.bookletLike || Number(printCandidate.analysis?.metrics?.overlapLineCount || 0) >= 2) {
-      return "변환 결과에 표시 오류가 감지되어 다른 변환 방식으로 자동 전환했습니다.";
-    }
+  if (selected.mode === "hwpjs-html" || !isNativeHwpMode(selected.mode)) {
+    return "원본 변환 엔진을 사용할 수 없어 호환 보기로 전환했습니다.";
   }
-  if (selected.mode === "hwp-saveas" && !printCandidate?.available) {
-    return "한컴 변환 설정 확인이 필요합니다. 호환 보기로 열었습니다.";
-  }
-  if (selected.mode === "hwpjs-html") {
-    return "한컴 변환 설정 확인이 필요합니다. 호환 보기로 열었습니다.";
+  const switchedByArtifact = candidates.some(
+    (candidate) => candidate.mode !== selected.mode
+      && candidate.available
+      && Number(candidate.artifactScore || 0) >= 45
+      && isNativeHwpMode(candidate.mode)
+  );
+  if (switchedByArtifact || Number(selected.artifactScore || 0) >= 45) {
+    return "변환 결과에 표시 오류가 감지되어 다른 방식으로 자동 전환했습니다.";
   }
   return "";
 }
@@ -2115,10 +2428,15 @@ function buildHwpCandidateScoreRows(candidates) {
   return candidates.map((candidate) => ({
     mode: candidate.mode,
     score: candidate.score,
+    qualityScore: candidate.qualityScore,
     fromCache: candidate.fromCache,
+    selectionEligible: candidate.selectionEligible !== false,
+    excludedReason: candidate.excludedReason || "",
     bookletLike: candidate.bookletLike,
     inspected: candidate.analysis.inspected,
     analysisMode: candidate.analysis.analysisMode || "full",
+    pageCount: Number(candidate.pageCount || candidate.analysis?.metrics?.pageCount || 0),
+    artifactScore: Number(candidate.artifactScore || 0),
     longLineCount: candidate.analysis.metrics.longLineCount,
     overlapLineCount: candidate.analysis.metrics.overlapLineCount,
     rasterLineHitCount: candidate.analysis.metrics.rasterLineHitCount,
@@ -2130,12 +2448,34 @@ function buildHwpCandidateScoreRows(candidates) {
   }));
 }
 
+function buildHwpCandidateFailureRows(candidates) {
+  return candidates
+    .filter((candidate) => !candidate.available || candidate.selectionEligible === false)
+    .map((candidate) => ({
+      mode: candidate.mode,
+      failureCode: candidate.failureCode || (candidate.selectionEligible === false ? "PAGE_COUNT_LOW" : "CONVERT_FAILED"),
+      excludedReason: candidate.excludedReason || "",
+      pageCount: Number(candidate.pageCount || 0),
+      stderr: String(candidate.runResult?.stderr || "").slice(0, 200),
+      error: String(candidate.runResult?.error || "").slice(0, 200)
+    }));
+}
+
 function isHwpQuickCandidateStable(candidate) {
   if (!candidate?.available) {
     return false;
   }
+  if (!isNativeHwpMode(candidate.mode)) {
+    return false;
+  }
   const metrics = candidate.analysis?.metrics || {};
+  if (Number(candidate.pageCount || 0) <= 0) {
+    return false;
+  }
   if (candidate.bookletLike) {
+    return false;
+  }
+  if (Number(candidate.artifactScore || 0) >= 36) {
     return false;
   }
   if (Number(metrics.overlapLineCount || 0) >= 2) {
@@ -2147,7 +2487,7 @@ function isHwpQuickCandidateStable(candidate) {
   if (Number(metrics.textLinePierceRatio || 0) >= 0.26) {
     return false;
   }
-  return Number(candidate.score || 0) >= 82;
+  return Number(candidate.qualityScore || candidate.score || 0) >= 80;
 }
 
 async function convertDocumentToPdf(sourcePath) {
@@ -2212,39 +2552,144 @@ async function convertDocumentToPdf(sourcePath) {
     errorCode = officeResult.errorCode || "";
   } else if (HWP_EXTENSIONS.has(ext)) {
     logConvertTrace("hwp-open-start", { source: path.basename(resolved), ext });
-    const hwpPrintPdfPath = createConvertedPdfPath(resolved, "hwp-print-pdf");
     const hwpSaveAsPdfPath = createConvertedPdfPath(resolved, "hwp-saveas");
+    const hwpPrintPdfPath = createConvertedPdfPath(resolved, "hwp-print-pdf");
+    const hwpConverterExePdfPath = createConvertedPdfPath(resolved, "hwp-converter-exe");
+    const hwpJsPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
     let hwpPrintResult = null;
     let hwpSaveAsResult = null;
+    let hwpConverterExeResult = null;
     let hwpJsResult = null;
-    const hwpJsPdfPath = createConvertedPdfPath(resolved, "hwpjs-html");
     const hwpCandidates = [];
 
     const selectorMeta = readHwpSelectionMeta(resolved);
     if (selectorMeta?.selectedMode && selectorMeta?.selectedPdfPath && fs.existsSync(selectorMeta.selectedPdfPath)) {
-      logConvertTrace("hwp-meta-hit", {
+      let selectorInvalidReason = "";
+      if (hasInvalidSelectorScore(selectorMeta.candidateScores, selectorMeta.selectedMode)) {
+        selectorInvalidReason = "score_not_trusted";
+      } else if (Number(selectorMeta.pageCount || 0) <= 0) {
+        selectorInvalidReason = "page_count_missing";
+      }
+      if (!selectorInvalidReason && selectorMeta.selectedMode === "hwpjs-html") {
+        const updatedAtTs = selectorMeta.updatedAt ? Date.parse(selectorMeta.updatedAt) : NaN;
+        if (!Number.isFinite(updatedAtTs) || Date.now() - updatedAtTs > HWPJS_SELECTOR_META_TTL_MS) {
+          selectorInvalidReason = "compatibility_cache_expired";
+        } else {
+          const nativeAvailable = await detectHancomComAvailability();
+          if (nativeAvailable) {
+            selectorInvalidReason = "native_engine_available";
+          }
+        }
+      }
+      if (!selectorInvalidReason) {
+        logConvertTrace("hwp-meta-hit", {
+          selectedMode: selectorMeta.selectedMode,
+          analysisMode: selectorMeta.analysisMode || "quick",
+          source: path.basename(resolved)
+        });
+        return {
+          sourcePath: resolved,
+          sourceExt: ext,
+          converted: true,
+          convertMode: selectorMeta.selectedMode,
+          warningMessage: selectorMeta.warningMessage || "",
+          errorCode: selectorMeta.warningMessage ? "RENDER_ARTIFACT_DETECTED" : "",
+          convertDiagnostics: {
+            selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+            selectedMode: selectorMeta.selectedMode,
+            analysisMode: selectorMeta.analysisMode || "quick",
+            candidateScores: Array.isArray(selectorMeta.candidateScores) ? selectorMeta.candidateScores : [],
+            candidateFailures: Array.isArray(selectorMeta.candidateFailures) ? selectorMeta.candidateFailures : [],
+            pageCount: Number(selectorMeta.pageCount || 0),
+            artifactScore: Number(selectorMeta.artifactScore || 0),
+            fallbackReason: selectorMeta.fallbackReason || selectorMeta.warningMessage || ""
+          },
+          sheetMap: [],
+          pdfPath: selectorMeta.selectedPdfPath,
+          pdfBuffer: await fsp.readFile(selectorMeta.selectedPdfPath)
+        };
+      }
+      logConvertTrace("hwp-meta-rejected", {
         selectedMode: selectorMeta.selectedMode,
-        analysisMode: selectorMeta.analysisMode || "quick",
+        reason: selectorInvalidReason,
         source: path.basename(resolved)
+      });
+    }
+
+    const hwpSaveAsCached = readCachedPdf(hwpSaveAsPdfPath);
+    let saveAsCandidate = hwpSaveAsCached
+      ? await collectHwpCandidate({
+        mode: "hwp-saveas",
+        pdfPath: hwpSaveAsCached,
+        fromCache: true,
+        analysisMode: "quick"
+      })
+      : await (async () => {
+        hwpSaveAsResult = await convertWithHancomComSaveAs(resolved, hwpSaveAsPdfPath, ext);
+        return collectHwpCandidate({
+          mode: "hwp-saveas",
+          pdfPath: hwpSaveAsPdfPath,
+          fromCache: false,
+          runResult: hwpSaveAsResult,
+          analysisMode: "quick"
+        });
+      })();
+    hwpCandidates.push(saveAsCandidate);
+
+    if (isHwpQuickCandidateStable(saveAsCandidate)) {
+      logConvertTrace("hwp-quick-pass", {
+        selectedMode: saveAsCandidate.mode,
+        score: saveAsCandidate.score,
+        qualityScore: saveAsCandidate.qualityScore,
+        pageCount: saveAsCandidate.pageCount,
+        source: path.basename(resolved)
+      });
+      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
+      const candidateFailures = buildHwpCandidateFailureRows(hwpCandidates);
+      writeHwpSelectionMeta(resolved, {
+        selectedMode: saveAsCandidate.mode,
+        selectedPdfPath: saveAsCandidate.path,
+        warningMessage: "",
+        fallbackReason: "",
+        analysisMode: "quick",
+        candidateScores,
+        candidateFailures,
+        pageCount: Number(saveAsCandidate.pageCount || 0),
+        artifactScore: Number(saveAsCandidate.artifactScore || 0),
+        engineVersion: getConversionEngineToken(saveAsCandidate.mode)
       });
       return {
         sourcePath: resolved,
         sourceExt: ext,
         converted: true,
-        convertMode: selectorMeta.selectedMode,
-        warningMessage: selectorMeta.warningMessage || "",
-        errorCode: selectorMeta.warningMessage ? "RENDER_ARTIFACT_DETECTED" : "",
+        convertMode: saveAsCandidate.mode,
+        warningMessage: "",
+        errorCode: "",
         convertDiagnostics: {
           selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
-          selectedMode: selectorMeta.selectedMode,
-          analysisMode: selectorMeta.analysisMode || "quick",
-          candidateScores: Array.isArray(selectorMeta.candidateScores) ? selectorMeta.candidateScores : [],
-          fallbackReason: selectorMeta.fallbackReason || selectorMeta.warningMessage || ""
+          selectedMode: saveAsCandidate.mode,
+          analysisMode: "quick",
+          candidateScores,
+          candidateFailures,
+          pageCount: Number(saveAsCandidate.pageCount || 0),
+          artifactScore: Number(saveAsCandidate.artifactScore || 0),
+          fallbackReason: ""
         },
         sheetMap: [],
-        pdfPath: selectorMeta.selectedPdfPath,
-        pdfBuffer: await fsp.readFile(selectorMeta.selectedPdfPath)
+        pdfPath: saveAsCandidate.path,
+        pdfBuffer: await fsp.readFile(saveAsCandidate.path)
       };
+    }
+
+    if (saveAsCandidate?.available && String(saveAsCandidate.analysis?.analysisMode || "").toLowerCase() !== "full") {
+      saveAsCandidate = await collectHwpCandidate({
+        mode: "hwp-saveas",
+        pdfPath: saveAsCandidate.path,
+        fromCache: true,
+        runResult: hwpSaveAsResult,
+        analysisMode: "full"
+      });
+      hwpCandidates[0] = saveAsCandidate;
     }
 
     const hwpPrintCached = readCachedPdf(hwpPrintPdfPath);
@@ -2265,44 +2710,6 @@ async function convertDocumentToPdf(sourcePath) {
           analysisMode: "quick"
         });
       })();
-    hwpCandidates.push(printCandidate);
-
-    if (isHwpQuickCandidateStable(printCandidate)) {
-      logConvertTrace("hwp-quick-pass", {
-        selectedMode: printCandidate.mode,
-        score: printCandidate.score,
-        source: path.basename(resolved)
-      });
-      const selectionWarning = buildHwpSelectionWarning(printCandidate, hwpCandidates);
-      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
-      writeHwpSelectionMeta(resolved, {
-        selectedMode: printCandidate.mode,
-        selectedPdfPath: printCandidate.path,
-        warningMessage: selectionWarning,
-        fallbackReason: selectionWarning || "",
-        analysisMode: "quick",
-        candidateScores
-      });
-      return {
-        sourcePath: resolved,
-        sourceExt: ext,
-        converted: true,
-        convertMode: printCandidate.mode,
-        warningMessage: selectionWarning,
-        errorCode: selectionWarning ? "RENDER_ARTIFACT_DETECTED" : "",
-        convertDiagnostics: {
-          selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
-          selectedMode: printCandidate.mode,
-          analysisMode: "quick",
-          candidateScores,
-          fallbackReason: selectionWarning || ""
-        },
-        sheetMap: [],
-        pdfPath: printCandidate.path,
-        pdfBuffer: await fsp.readFile(printCandidate.path)
-      };
-    }
-
     if (printCandidate?.available && String(printCandidate.analysis?.analysisMode || "").toLowerCase() !== "full") {
       printCandidate = await collectHwpCandidate({
         mode: "hwp-print-pdf",
@@ -2311,33 +2718,34 @@ async function convertDocumentToPdf(sourcePath) {
         runResult: hwpPrintResult,
         analysisMode: "full"
       });
-      hwpCandidates[0] = printCandidate;
     }
+    hwpCandidates.push(printCandidate);
 
-    const hwpSaveAsCached = readCachedPdf(hwpSaveAsPdfPath);
-    const saveAsCandidate = hwpSaveAsCached
+    const hwpConverterExeCached = readCachedPdf(hwpConverterExePdfPath);
+    const converterExeCandidate = hwpConverterExeCached
       ? await collectHwpCandidate({
-        mode: "hwp-saveas",
-        pdfPath: hwpSaveAsCached,
+        mode: "hwp-converter-exe",
+        pdfPath: hwpConverterExeCached,
         fromCache: true,
         analysisMode: "full"
       })
       : await (async () => {
-        hwpSaveAsResult = await convertWithHancomComSaveAs(resolved, hwpSaveAsPdfPath, ext);
+        hwpConverterExeResult = await convertWithHancomConverterExe(resolved, hwpConverterExePdfPath);
         return collectHwpCandidate({
-          mode: "hwp-saveas",
-          pdfPath: hwpSaveAsPdfPath,
+          mode: "hwp-converter-exe",
+          pdfPath: hwpConverterExePdfPath,
           fromCache: false,
-          runResult: hwpSaveAsResult,
+          runResult: hwpConverterExeResult,
           analysisMode: "full"
         });
       })();
-    hwpCandidates.push(saveAsCandidate);
+    hwpCandidates.push(converterExeCandidate);
 
+    applyHwpPageCountGate(hwpCandidates);
     let selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
-    const needHwpJsCompare = !selectedCandidate || Number(selectedCandidate.score || 0) < 68;
-    if (needHwpJsCompare) {
-      const cachedHwpJs = readCachedPdf(hwpJsPdfPath);
+    const needCompatibilityCandidate = !selectedCandidate || Number(selectedCandidate.qualityScore || selectedCandidate.score || 0) < 64;
+    if (needCompatibilityCandidate) {
+      const cachedHwpJs = readCachedPdf(hwpJsPdfPath, { maxAgeMs: HWPJS_SELECTOR_META_TTL_MS });
       let hwpJsCandidate = cachedHwpJs
         ? await collectHwpCandidate({
           mode: "hwpjs-html",
@@ -2353,12 +2761,7 @@ async function convertDocumentToPdf(sourcePath) {
             mode: "hwpjs-html",
             pdfPath: hwpJsPdfPath,
             fromCache: false,
-            runResult: {
-              ok: true,
-              stdout: "",
-              stderr: "",
-              error: ""
-            },
+            runResult: hwpJsResult,
             analysisMode: "full"
           });
         }
@@ -2366,26 +2769,40 @@ async function convertDocumentToPdf(sourcePath) {
       if (hwpJsCandidate) {
         hwpCandidates.push(hwpJsCandidate);
       }
+      applyHwpPageCountGate(hwpCandidates);
       selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
     }
 
     if (selectedCandidate?.available && selectedCandidate.path && fs.existsSync(selectedCandidate.path)) {
       const selectedMode = selectedCandidate.mode;
       const selectionWarning = buildHwpSelectionWarning(selectedCandidate, hwpCandidates);
+      let selectionErrorCode = "";
+      if (selectionWarning.includes("원본 변환 엔진")) {
+        selectionErrorCode = "ENGINE_MISSING";
+      } else if (selectionWarning) {
+        selectionErrorCode = "RENDER_ARTIFACT_DETECTED";
+      }
+      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
+      const candidateFailures = buildHwpCandidateFailureRows(hwpCandidates);
       logConvertTrace("hwp-select-final", {
         selectedMode,
         score: selectedCandidate.score,
+        qualityScore: selectedCandidate.qualityScore,
         analysisMode: selectedCandidate.analysis?.analysisMode || "full",
+        pageCount: selectedCandidate.pageCount,
         source: path.basename(resolved)
       });
-      const candidateScores = buildHwpCandidateScoreRows(hwpCandidates);
       writeHwpSelectionMeta(resolved, {
         selectedMode,
         selectedPdfPath: selectedCandidate.path,
         warningMessage: selectionWarning,
         fallbackReason: selectionWarning || "",
         analysisMode: selectedCandidate.analysis?.analysisMode || "full",
-        candidateScores
+        candidateScores,
+        candidateFailures,
+        pageCount: Number(selectedCandidate.pageCount || 0),
+        artifactScore: Number(selectedCandidate.artifactScore || 0),
+        engineVersion: getConversionEngineToken(selectedMode)
       });
       return {
         sourcePath: resolved,
@@ -2393,12 +2810,15 @@ async function convertDocumentToPdf(sourcePath) {
         converted: true,
         convertMode: selectedMode,
         warningMessage: selectionWarning,
-        errorCode: selectionWarning ? "RENDER_ARTIFACT_DETECTED" : "",
+        errorCode: selectionErrorCode,
         convertDiagnostics: {
           selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
           selectedMode,
           analysisMode: selectedCandidate.analysis?.analysisMode || "full",
           candidateScores,
+          candidateFailures,
+          pageCount: Number(selectedCandidate.pageCount || 0),
+          artifactScore: Number(selectedCandidate.artifactScore || 0),
           fallbackReason: selectionWarning || ""
         },
         sheetMap: [],
@@ -2408,33 +2828,29 @@ async function convertDocumentToPdf(sourcePath) {
     }
 
     const hwpErrorDetail = [
-      hwpPrintResult?.stderr,
-      hwpPrintResult?.error,
-      hwpCandidates.find((candidate) => candidate.mode === "hwp-print-pdf")?.runResult?.stderr,
       hwpSaveAsResult?.stderr,
       hwpSaveAsResult?.error,
-      hwpCandidates.find((candidate) => candidate.mode === "hwp-saveas")?.runResult?.stderr,
+      hwpPrintResult?.stderr,
+      hwpPrintResult?.error,
+      hwpConverterExeResult?.stderr,
+      hwpConverterExeResult?.error,
       hwpJsResult?.reason
     ]
       .map((value) => String(value || "").trim())
       .find(Boolean);
-    const hwpTimedOut = isTimeoutResult(hwpPrintResult) || isTimeoutResult(hwpSaveAsResult);
-    const hwpSecurityMissing = /hwp_security_module_missing/i.test(
-      `${String(hwpPrintResult?.stderr || "")} ${String(hwpPrintResult?.error || "")} ${String(hwpSaveAsResult?.stderr || "")} ${String(hwpSaveAsResult?.error || "")}`
-    );
+    const mergedFailureText = `${String(hwpSaveAsResult?.stderr || "")} ${String(hwpSaveAsResult?.error || "")} ${String(hwpPrintResult?.stderr || "")} ${String(hwpPrintResult?.error || "")}`;
+    const hwpTimedOut = isTimeoutResult(hwpPrintResult) || isTimeoutResult(hwpSaveAsResult) || isTimeoutResult(hwpConverterExeResult);
+    const hwpSecurityMissing = /hwp_security_module_missing/i.test(mergedFailureText);
     const hwpRenderArtifact = hwpCandidates.some(
-      (candidate) => candidate.bookletLike
-        || Number(candidate.analysis?.metrics?.overlapLineCount || 0) >= 2
-        || Number(candidate.analysis?.metrics?.rasterLineHitCount || 0) >= 2
-        || Number(candidate.analysis?.metrics?.textLinePierceRatio || 0) >= 0.26
+      (candidate) => Number(candidate.artifactScore || 0) >= 45 || candidate.excludedReason === "PAGE_COUNT_LOW"
     );
     const reasonHint = hwpSecurityMissing
-      ? "한컴 보안 모듈이 준비되지 않아 텍스트 기반 보기로 전환했습니다."
+      ? "원본 변환 엔진을 사용할 수 없어 호환 보기로 전환했습니다."
       : hwpTimedOut
-        ? "한컴 변환 엔진 응답이 지연되어 텍스트 기반 보기로 전환했습니다."
+        ? "한컴 변환 엔진 응답이 지연되어 호환 보기로 전환했습니다."
         : hwpRenderArtifact
-          ? "변환 결과에서 비정상 페이지 패턴이 감지되어 텍스트 기반 보기로 전환했습니다."
-          : "원본 레이아웃 변환에 실패해 텍스트 기반 보기로 전환했습니다.";
+          ? "변환 결과에 표시 오류가 감지되어 다른 방식으로 자동 전환했습니다."
+          : "원본 레이아웃 변환에 실패해 호환 보기로 전환했습니다.";
     warningMessage = buildConversionWarning(ext, hwpErrorDetail, reasonHint);
     errorCode = hwpSecurityMissing
       ? "ENGINE_MISSING"
@@ -2448,6 +2864,9 @@ async function convertDocumentToPdf(sourcePath) {
       selectedMode: "fallback",
       analysisMode: "full",
       candidateScores: buildHwpCandidateScoreRows(hwpCandidates),
+      candidateFailures: buildHwpCandidateFailureRows(hwpCandidates),
+      pageCount: 0,
+      artifactScore: 100,
       fallbackReason: reasonHint
     };
     logConvertTrace("hwp-fallback", {
