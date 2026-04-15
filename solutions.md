@@ -27,3 +27,11 @@
 - 품질 분석에 `rasterLineScore` 계열 지표(가로줄 관통 패턴 추정)를 추가하고 최종 점수를 `vector + raster` 통합 점수로 계산하도록 강화했습니다.
 - HWP/Office COM 변환 함수를 비동기 실행으로 전환해 UI 멈춤을 줄이고, 단계별 진단 로그를 남겨 병목 추적이 가능하게 했습니다.
 - `convertDiagnostics`에 `selectorVersion`, `analysisMode`, 상세 후보 점수(`vectorLineScore`, `rasterLineScore`, `finalScore`)를 포함해 원인 확인이 쉬워졌습니다.
+
+## [2026-04-15] lookup v1.3.0 개선 적용
+- 지원 확장자를 `ppt/pptx`까지 확장하고, 열기 대화상자/설치 연결(레지스트리)에도 동일하게 반영했습니다.
+- HWP/Office 변환 결과는 파일 존재만 보지 않고 실제 PDF 유효성(헤더/크기/파서/페이지 수) 검사 통과 시에만 채택하도록 강화했습니다.
+- HWP selector 캐시 즉시 반환 경로에도 유효성 검사를 넣어 `Invalid PDF structure` 흰 화면 재발 가능성을 줄였습니다.
+- 변환 단계 상태 이벤트(`엔진 확인→변환→검사→표시`)를 메인에서 보내고 renderer에서 수신해 진행 상황을 상태바에 표시하도록 연결했습니다.
+- `convertMode` 공개 값은 사용자/로그 기준으로 정규화(`native-pdf`, `hancom-com`, `libreoffice-*`, `hwpjs-compat`, `fallback-text`)해 전달하도록 정리했습니다.
+- 설치 아이콘 품질을 위해 `signAndEditExecutable`을 다시 활성화하고, 번들 LibreOffice 경로(`resources/libreoffice`) 우선 탐색을 추가했습니다.

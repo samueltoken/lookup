@@ -35,6 +35,8 @@
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".docx" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xls" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xlsx" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".ppt" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".pptx" ""
 
     WriteRegStr HKCU "Software\Classes\lookup.PDF" "" "lookup PDF"
     WriteRegStr HKCU "Software\Classes\lookup.PDF\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
@@ -64,6 +66,14 @@
     WriteRegStr HKCU "Software\Classes\lookup.XLSX\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
     WriteRegStr HKCU "Software\Classes\lookup.XLSX\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
 
+    WriteRegStr HKCU "Software\Classes\lookup.PPT" "" "lookup PPT"
+    WriteRegStr HKCU "Software\Classes\lookup.PPT\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.PPT\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
+    WriteRegStr HKCU "Software\Classes\lookup.PPTX" "" "lookup PPTX"
+    WriteRegStr HKCU "Software\Classes\lookup.PPTX\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
+    WriteRegStr HKCU "Software\Classes\lookup.PPTX\shell\open\command" "" "$\"$appExe$\" $\"%1$\""
+
     WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "lookup.PDF" ""
     WriteRegStr HKCU "Software\Classes\.hwp\OpenWithProgids" "lookup.HWP" ""
     WriteRegStr HKCU "Software\Classes\.hwpx\OpenWithProgids" "lookup.HWPX" ""
@@ -71,6 +81,8 @@
     WriteRegStr HKCU "Software\Classes\.docx\OpenWithProgids" "lookup.DOCX" ""
     WriteRegStr HKCU "Software\Classes\.xls\OpenWithProgids" "lookup.XLS" ""
     WriteRegStr HKCU "Software\Classes\.xlsx\OpenWithProgids" "lookup.XLSX" ""
+    WriteRegStr HKCU "Software\Classes\.ppt\OpenWithProgids" "lookup.PPT" ""
+    WriteRegStr HKCU "Software\Classes\.pptx\OpenWithProgids" "lookup.PPTX" ""
     System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
   !macroend
 !else
@@ -83,6 +95,8 @@
     DeleteRegKey HKCU "Software\Classes\lookup.DOCX"
     DeleteRegKey HKCU "Software\Classes\lookup.XLS"
     DeleteRegKey HKCU "Software\Classes\lookup.XLSX"
+    DeleteRegKey HKCU "Software\Classes\lookup.PPT"
+    DeleteRegKey HKCU "Software\Classes\lookup.PPTX"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\lookup.exe"
 
     DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "lookup.PDF"
@@ -92,6 +106,8 @@
     DeleteRegValue HKCU "Software\Classes\.docx\OpenWithProgids" "lookup.DOCX"
     DeleteRegValue HKCU "Software\Classes\.xls\OpenWithProgids" "lookup.XLS"
     DeleteRegValue HKCU "Software\Classes\.xlsx\OpenWithProgids" "lookup.XLSX"
+    DeleteRegValue HKCU "Software\Classes\.ppt\OpenWithProgids" "lookup.PPT"
+    DeleteRegValue HKCU "Software\Classes\.pptx\OpenWithProgids" "lookup.PPTX"
     System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
   !macroend
 !endif

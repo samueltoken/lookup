@@ -4323,6 +4323,23 @@ function bindMainProcessEvents() {
       showUpdateNotesModal(payload.targetVersion || state.appVersion, releaseNotesSource);
     }
   });
+
+  if (typeof window.lookupAPI.onDocumentConvertStatus === "function") {
+    window.lookupAPI.onDocumentConvertStatus((payload) => {
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+      const message = String(payload.message || "").trim();
+      const stage = String(payload.stage || "").trim();
+      if (message) {
+        setStatus(message);
+        return;
+      }
+      if (stage) {
+        setStatus(`문서 변환 단계: ${stage}`);
+      }
+    });
+  }
 }
 
 async function initializeUpdateStatus() {

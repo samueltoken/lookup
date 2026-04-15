@@ -44,5 +44,10 @@ contextBridge.exposeInMainWorld("lookupAPI", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("update-status", listener);
     return () => ipcRenderer.removeListener("update-status", listener);
+  },
+  onDocumentConvertStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("document-convert-status", listener);
+    return () => ipcRenderer.removeListener("document-convert-status", listener);
   }
 });
