@@ -95,14 +95,15 @@ function mt(key) {
   return menuText[lang][key] || menuText.ko[key] || key;
 }
 
-const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx"]);
-const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"]);
+const SUPPORTED_DOCUMENT_EXTENSIONS = new Set([".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]);
+const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]);
 const HWP_EXTENSIONS = new Set([".hwp", ".hwpx"]);
-const CONVERT_CACHE_SCHEMA_VERSION = "v6";
-const HWP_QUALITY_SELECTOR_VERSION = "v3";
-const HWP_SELECTION_META_VERSION = "v3";
+const CONVERT_CACHE_SCHEMA_VERSION = "v7";
+const HWP_QUALITY_SELECTOR_VERSION = "v4";
+const HWP_SELECTION_META_VERSION = "v4";
 const FALLBACK_CACHE_TTL_MS = 45 * 60 * 1000;
 const HWPJS_SELECTOR_META_TTL_MS = 20 * 60 * 1000;
+const MIN_VALID_PDF_BYTES = 1024;
 const APP_RELEASE_VERSION = String(packageMeta?.version || app.getVersion() || "0.0.0");
 pendingDocumentToOpen = extractDocumentPath(process.argv);
 
@@ -147,6 +148,15 @@ function sendToRenderer(channel, payload) {
     return;
   }
   mainWindow.webContents.send(channel, payload);
+}
+
+function sendConvertStatus(stage, percent, message, extra = {}) {
+  sendToRenderer("document-convert-status", {
+    stage: String(stage || ""),
+    percent: Number.isFinite(percent) ? percent : null,
+    message: String(message || ""),
+    ...extra
+  });
 }
 
 function sendDocumentToRenderer(filePath) {
@@ -630,8 +640,12 @@ function getConversionEngineToken(convertMode = "fallback") {
   switch (String(convertMode || "").toLowerCase()) {
     case "office-com":
       return "officecom-v1";
+    case "libreoffice-bundled":
+      return "libreoffice-bundled-v1";
+    case "libreoffice-system":
+      return "libreoffice-system-v1";
     case "libreoffice":
-      return "libreoffice-v1";
+      return "libreoffice-system-v1";
     case "hwp-print-pdf":
       return `hancomcom-print-v3-${HWP_QUALITY_SELECTOR_VERSION}`;
     case "hwp-saveas":
@@ -763,6 +777,21 @@ function readCachedPdf(cachePath, options = {}) {
   if (!cachePath || !fs.existsSync(cachePath)) {
     return null;
   }
+  try {
+    const stat = fs.statSync(cachePath);
+    if (!stat.isFile() || stat.size < (options.minSizeBytes || MIN_VALID_PDF_BYTES)) {
+      return null;
+    }
+    const fd = fs.openSync(cachePath, "r");
+    const header = Buffer.alloc(5);
+    fs.readSync(fd, header, 0, 5, 0);
+    fs.closeSync(fd);
+    if (header.toString("utf8") !== "%PDF-") {
+      return null;
+    }
+  } catch (_error) {
+    return null;
+  }
   if (Number.isFinite(options.maxAgeMs) && options.maxAgeMs > 0) {
     try {
       const stat = fs.statSync(cachePath);
@@ -775,6 +804,62 @@ function readCachedPdf(cachePath, options = {}) {
     }
   }
   return cachePath;
+}
+
+async function validateConvertedPdfPath(pdfPath, options = {}) {
+  if (!pdfPath || !fs.existsSync(pdfPath)) {
+    return {
+      ok: false,
+      errorCode: "INVALID_CONVERTED_PDF",
+      reason: "file_not_found",
+      pageCount: 0
+    };
+  }
+  try {
+    const stat = await fsp.stat(pdfPath);
+    if (!stat.isFile() || stat.size < (options.minSizeBytes || MIN_VALID_PDF_BYTES)) {
+      return {
+        ok: false,
+        errorCode: "INVALID_CONVERTED_PDF",
+        reason: "file_too_small",
+        pageCount: 0
+      };
+    }
+    const fd = await fsp.open(pdfPath, "r");
+    const header = Buffer.alloc(5);
+    await fd.read(header, 0, 5, 0);
+    await fd.close();
+    if (header.toString("utf8") !== "%PDF-") {
+      return {
+        ok: false,
+        errorCode: "INVALID_CONVERTED_PDF",
+        reason: "pdf_header_missing",
+        pageCount: 0
+      };
+    }
+    const pageCount = await getPdfPageCount(pdfPath);
+    if (!Number.isFinite(pageCount) || pageCount < 1) {
+      return {
+        ok: false,
+        errorCode: "PAGE_COUNT_ZERO",
+        reason: "page_count_zero",
+        pageCount: 0
+      };
+    }
+    return {
+      ok: true,
+      errorCode: "",
+      reason: "",
+      pageCount
+    };
+  } catch (_error) {
+    return {
+      ok: false,
+      errorCode: "INVALID_CONVERTED_PDF",
+      reason: "pdf_parse_failed",
+      pageCount: 0
+    };
+  }
 }
 
 function detectSpreadsheetVisualAssets(filePath) {
@@ -959,13 +1044,27 @@ function runProcess(command, args, timeoutMs = 180000) {
 }
 
 function findLibreOfficeExecutable() {
+  const bundledCandidates = [
+    path.join(process.resourcesPath || "", "libreoffice", "program", "soffice.com"),
+    path.join(process.resourcesPath || "", "libreoffice", "program", "soffice.exe"),
+    path.join(__dirname, "build", "libreoffice", "program", "soffice.com"),
+    path.join(__dirname, "build", "libreoffice", "program", "soffice.exe")
+  ];
+  for (const candidate of bundledCandidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return { path: candidate, mode: "libreoffice-bundled" };
+    }
+  }
+
   const knownPaths = [
     path.join(process.env["ProgramFiles"] || "C:\\Program Files", "LibreOffice", "program", "soffice.exe"),
-    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "LibreOffice", "program", "soffice.exe")
+    path.join(process.env["ProgramFiles"] || "C:\\Program Files", "LibreOffice", "program", "soffice.com"),
+    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "LibreOffice", "program", "soffice.exe"),
+    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "LibreOffice", "program", "soffice.com")
   ];
   for (const candidate of knownPaths) {
     if (fs.existsSync(candidate)) {
-      return candidate;
+      return { path: candidate, mode: "libreoffice-system" };
     }
   }
 
@@ -979,11 +1078,11 @@ function findLibreOfficeExecutable() {
       .map((line) => line.trim())
       .find(Boolean);
     if (first && fs.existsSync(first)) {
-      return first;
+      return { path: first, mode: "libreoffice-system" };
     }
   }
 
-  return "";
+  return { path: "", mode: "" };
 }
 
 function isTimeoutResult(result) {
@@ -1011,7 +1110,7 @@ async function detectHancomComAvailability(forceCheck = false) {
 }
 
 function isNativeHwpMode(mode) {
-  return mode === "hwp-saveas" || mode === "hwp-print-pdf" || mode === "hwp-converter-exe";
+  return mode === "hwp-saveas" || mode === "hwp-print-pdf";
 }
 
 function getHwpModePriority(mode) {
@@ -1021,7 +1120,7 @@ function getHwpModePriority(mode) {
     case "hwp-print-pdf":
       return 4;
     case "hwp-converter-exe":
-      return 3;
+      return 1;
     case "hwpjs-html":
       return 2;
     case "fallback":
@@ -1056,6 +1155,32 @@ function buildConversionWarning(sourceExt, engineMessage, hint) {
     return `${extLabel} 문서: ${reason}`;
   }
   return `${extLabel} 문서: ${reason} (${details.slice(0, 120)})`;
+}
+
+function normalizePublicConvertMode(mode, converted) {
+  if (!converted) {
+    return "native-pdf";
+  }
+  switch (String(mode || "").toLowerCase()) {
+    case "hwp-saveas":
+    case "hwp-print-pdf":
+      return "hancom-com";
+    case "hwpjs-html":
+      return "hwpjs-compat";
+    case "libreoffice-bundled":
+      return "libreoffice-bundled";
+    case "libreoffice-system":
+    case "libreoffice":
+      return "libreoffice-system";
+    case "xlsx-html":
+    case "fallback":
+    case "fallback-text":
+      return "fallback-text";
+    case "native":
+      return "native-pdf";
+    default:
+      return String(mode || "fallback-text");
+  }
 }
 
 function logConvertTrace(stage, payload = {}) {
@@ -1507,6 +1632,27 @@ async function convertWithExcelCom(sourcePath, outputPdfPath) {
   return await runPowerShellAsync(script, 180000);
 }
 
+async function convertWithPowerPointCom(sourcePath, outputPdfPath) {
+  const source = escapeForPowerShell(sourcePath);
+  const output = escapeForPowerShell(outputPdfPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$powerPoint = $null",
+    "$presentation = $null",
+    "try {",
+    "  $powerPoint = New-Object -ComObject PowerPoint.Application",
+    "  $presentation = $powerPoint.Presentations.Open(" + source + ", $false, $true, $false)",
+    "  $presentation.SaveAs(" + output + ", 32)",
+    "} finally {",
+    "  if ($presentation -ne $null) { $presentation.Close() | Out-Null }",
+    "  if ($powerPoint -ne $null) { $powerPoint.Quit() | Out-Null }",
+    "}",
+    "if (-not (Test-Path " + output + ")) { throw 'powerpoint_export_failed' }"
+  ].join("; ");
+
+  return await runPowerShellAsync(script, 180000);
+}
+
 async function convertWithHancomComPrintPdf(sourcePath, outputPdfPath, ext = ".hwp") {
   const source = escapeForPowerShell(sourcePath);
   const output = escapeForPowerShell(outputPdfPath);
@@ -1524,26 +1670,26 @@ async function convertWithHancomComPrintPdf(sourcePath, outputPdfPath, ext = ".h
     "  if ($regValue -and $regValue.$moduleName) { $modulePath = [string]$regValue.$moduleName }",
     "  if (-not $modulePath -or -not (Test-Path $modulePath)) {",
     "    $candidates = @(",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll')",
     "    )",
     "    foreach ($candidate in $candidates) {",
     "      if ($candidate -and (Test-Path $candidate)) {",
@@ -1615,26 +1761,26 @@ async function convertWithHancomComSaveAs(sourcePath, outputPdfPath, ext = ".hwp
     "  if ($regValue -and $regValue.$moduleName) { $modulePath = [string]$regValue.$moduleName }",
     "  if (-not $modulePath -or -not (Test-Path $modulePath)) {",
     "    $candidates = @(",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll',",
-    "      Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll'",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path $env:ProgramFiles 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path $env:ProgramFiles 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2024\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2022\\HOffice120\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\Office 2020\\HOffice110\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hnc\\Office\\Bin\\FilePathCheckerModuleExample.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'Hancom\\HOffice\\Bin\\FilePathCheckerModule.dll')",
+    "      $(Join-Path ${env:ProgramFiles(x86)} 'HNC\\HOffice\\Bin\\FilePathCheckerModule.dll')",
     "    )",
     "    foreach ($candidate in $candidates) {",
     "      if ($candidate -and (Test-Path $candidate)) {",
@@ -1734,15 +1880,17 @@ async function convertWithHancomConverterExe(sourcePath, outputPdfPath) {
 }
 
 async function convertWithLibreOffice(sourcePath, outputPdfPath) {
-  const soffice = findLibreOfficeExecutable();
-  if (!soffice) {
+  const detected = findLibreOfficeExecutable();
+  if (!detected.path) {
     return {
       ok: false,
       missingEngine: true,
-      stderr: "libreoffice_missing"
+      stderr: "libreoffice_missing",
+      engineMode: ""
     };
   }
 
+  const soffice = detected.path;
   const outDir = path.dirname(outputPdfPath);
   const sourceBaseName = path.basename(sourcePath, path.extname(sourcePath));
   const producedPdfPath = path.join(outDir, `${sourceBaseName}.pdf`);
@@ -1761,13 +1909,17 @@ async function convertWithLibreOffice(sourcePath, outputPdfPath) {
   );
 
   if (!result.ok) {
-    return result;
+    return {
+      ...result,
+      engineMode: detected.mode || "libreoffice-system"
+    };
   }
 
   if (!fs.existsSync(producedPdfPath)) {
     return {
       ok: false,
-      stderr: "libreoffice_pdf_not_created"
+      stderr: "libreoffice_pdf_not_created",
+      engineMode: detected.mode || "libreoffice-system"
     };
   }
 
@@ -1779,7 +1931,8 @@ async function convertWithLibreOffice(sourcePath, outputPdfPath) {
     ok: true,
     stdout: result.stdout,
     stderr: result.stderr,
-    status: result.status
+    status: result.status,
+    engineMode: detected.mode || "libreoffice-system"
   };
 }
 
@@ -2202,6 +2355,9 @@ async function extractDocumentTextForFallback(filePath, ext) {
     }
     return extractOfficeAstText(filePath);
   }
+  if (ext === ".ppt" || ext === ".pptx") {
+    return extractOfficeAstText(filePath);
+  }
   if (ext === ".hwp") {
     const legacy = extractHwpLegacyText(filePath);
     if (legacy) {
@@ -2239,15 +2395,24 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
   const officePdfPath = createConvertedPdfPath(sourcePath, "office-com");
   const cachedOffice = readCachedPdf(officePdfPath);
   if (cachedOffice) {
-    return {
-      ok: true,
-      engine: "office-com",
-      warningMessage: "",
-      pdfPath: cachedOffice,
-      fromCache: true,
-      errorCode: "",
-      sheetMap: spreadsheetUnknownSheetMap
-    };
+    const cachedValidation = await validateConvertedPdfPath(cachedOffice);
+    if (cachedValidation.ok) {
+      return {
+        ok: true,
+        engine: "office-com",
+        warningMessage: "",
+        pdfPath: cachedOffice,
+        fromCache: true,
+        errorCode: "",
+        sheetMap: spreadsheetUnknownSheetMap,
+        pageCount: cachedValidation.pageCount
+      };
+    }
+    try {
+      await fsp.unlink(cachedOffice);
+    } catch (_error) {
+      // ignore stale cache cleanup failure
+    }
   }
 
   let comResult = { ok: false, stderr: "unsupported_office_ext" };
@@ -2255,52 +2420,89 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
     comResult = await convertWithWordCom(sourcePath, officePdfPath);
   } else if (ext === ".xls" || ext === ".xlsx") {
     comResult = await convertWithExcelCom(sourcePath, officePdfPath);
+  } else if (ext === ".ppt" || ext === ".pptx") {
+    comResult = await convertWithPowerPointCom(sourcePath, officePdfPath);
   }
 
   if (comResult.ok && fs.existsSync(officePdfPath)) {
-    return {
-      ok: true,
-      engine: "office-com",
-      warningMessage: "",
-      pdfPath: officePdfPath,
-      fromCache: false,
-      errorCode: "",
-      sheetMap: spreadsheetUnknownSheetMap
+    const comValidation = await validateConvertedPdfPath(officePdfPath);
+    if (comValidation.ok) {
+      return {
+        ok: true,
+        engine: "office-com",
+        warningMessage: "",
+        pdfPath: officePdfPath,
+        fromCache: false,
+        errorCode: "",
+        sheetMap: spreadsheetUnknownSheetMap,
+        pageCount: comValidation.pageCount
+      };
+    }
+    try {
+      await fsp.unlink(officePdfPath);
+    } catch (_error) {
+      // ignore invalid conversion cleanup failure
+    }
+    comResult = {
+      ...comResult,
+      ok: false,
+      stderr: `office_invalid_pdf:${comValidation.reason}`,
+      error: comValidation.errorCode || "INVALID_CONVERTED_PDF"
     };
   }
 
-  const librePdfPath = createConvertedPdfPath(sourcePath, "libreoffice");
+  const libreModeHint = findLibreOfficeExecutable().mode || "libreoffice-system";
+  const librePdfPath = createConvertedPdfPath(sourcePath, libreModeHint);
   const cachedLibre = readCachedPdf(librePdfPath);
   if (cachedLibre) {
-    return {
-      ok: true,
-      engine: "libreoffice",
-      warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
-      pdfPath: cachedLibre,
-      fromCache: true,
-      errorCode: "",
-      sheetMap: spreadsheetUnknownSheetMap
-    };
+    const cachedValidation = await validateConvertedPdfPath(cachedLibre);
+    if (cachedValidation.ok) {
+      return {
+        ok: true,
+        engine: libreModeHint,
+        warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
+        pdfPath: cachedLibre,
+        fromCache: true,
+        errorCode: "",
+        sheetMap: spreadsheetUnknownSheetMap,
+        pageCount: cachedValidation.pageCount
+      };
+    }
+    try {
+      await fsp.unlink(cachedLibre);
+    } catch (_error) {
+      // ignore stale cache cleanup failure
+    }
   }
 
   const libreResult = await convertWithLibreOffice(sourcePath, librePdfPath);
+  const libreEngineMode = libreResult?.engineMode || libreModeHint;
   if (libreResult.ok && fs.existsSync(librePdfPath)) {
-    return {
-      ok: true,
-      engine: "libreoffice",
-      warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
-      pdfPath: librePdfPath,
-      fromCache: false,
-      errorCode: "",
-      sheetMap: spreadsheetUnknownSheetMap
-    };
+    const libreValidation = await validateConvertedPdfPath(librePdfPath);
+    if (libreValidation.ok) {
+      return {
+        ok: true,
+        engine: libreEngineMode,
+        warningMessage: "Office 기본 변환에 실패해 LibreOffice 호환 엔진으로 열었습니다.",
+        pdfPath: librePdfPath,
+        fromCache: false,
+        errorCode: "",
+        sheetMap: spreadsheetUnknownSheetMap,
+        pageCount: libreValidation.pageCount
+      };
+    }
+    try {
+      await fsp.unlink(librePdfPath);
+    } catch (_error) {
+      // ignore invalid conversion cleanup failure
+    }
   }
 
   const timedOut = isTimeoutResult(comResult) || isTimeoutResult(libreResult);
   const reasonHint = timedOut
     ? "변환 시간이 초과되어 호환 보기로 전환했습니다."
     : libreResult.missingEngine
-      ? "Word/Excel 또는 LibreOffice 변환 엔진을 찾지 못해 호환 보기로 전환했습니다."
+      ? "Word/Excel/PowerPoint 또는 LibreOffice 변환 엔진을 찾지 못해 호환 보기로 전환했습니다."
       : "고품질 변환에 실패해 호환 보기로 전환했습니다.";
 
   const details = [comResult?.stderr, comResult?.error, libreResult?.stderr, libreResult?.error]
@@ -2309,7 +2511,7 @@ async function convertOfficeFileToPdf(sourcePath, ext) {
 
   return {
     ok: false,
-    engine: "fallback",
+    engine: "fallback-text",
     warningMessage: buildConversionWarning(ext, details, reasonHint),
     errorCode: timedOut ? "ENGINE_TIMEOUT" : libreResult.missingEngine ? "ENGINE_MISSING" : "CONVERT_FAILED",
     emptyDocument: false,
@@ -2352,12 +2554,51 @@ async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analys
       qualityScore: 0
     };
   }
+  const validation = await validateConvertedPdfPath(pdfPath);
+  if (!validation.ok) {
+    try {
+      await fsp.unlink(pdfPath);
+    } catch (_error) {
+      // ignore invalid candidate cleanup failure
+    }
+    return {
+      mode,
+      path: pdfPath,
+      available: false,
+      selectionEligible: false,
+      fromCache: Boolean(fromCache),
+      runResult: runResult || null,
+      failureCode: validation.errorCode || "INVALID_CONVERTED_PDF",
+      pageCount: 0,
+      artifactScore: 100,
+      analysis: {
+        inspected: false,
+        analysisMode,
+        score: 0,
+        metrics: {
+          longLineCount: 0,
+          overlapLineCount: 0,
+          rasterLineHitCount: 0,
+          textLinePierceRatio: 0,
+          readableChars: 0,
+          bookletLikePages: 0,
+          sampledPages: 0,
+          vectorLineScore: 0,
+          rasterLineScore: 0,
+          finalScore: 0
+        }
+      },
+      bookletLike: false,
+      score: 0,
+      qualityScore: 0
+    };
+  }
   const normalizedMode = String(analysisMode || "full").toLowerCase() === "quick" ? "quick" : "full";
   const analysis = await analyzeHwpPdfQuality(pdfPath, {
     analysisMode: normalizedMode,
     maxPages: normalizedMode === "quick" ? 1 : 2
   });
-  const pageCount = Number(analysis?.metrics?.pageCount || (await getPdfPageCount(pdfPath)) || 0);
+  const pageCount = Number(analysis?.metrics?.pageCount || validation.pageCount || 0);
   const bookletLike = Boolean(analysis?.metrics?.bookletLikePages > 0 || (await isLikelyBookletPdf(pdfPath)));
   const overlapLineCount = Number(analysis?.metrics?.overlapLineCount || 0);
   const rasterLineHitCount = Number(analysis?.metrics?.rasterLineHitCount || 0);
@@ -2388,7 +2629,7 @@ async function collectHwpCandidate({ mode, pdfPath, fromCache, runResult, analys
     mode,
     path: pdfPath,
     available: true,
-    selectionEligible: true,
+    selectionEligible: mode === "hwp-converter-exe" ? process.env.LOOKUP_ENABLE_HWP_CONVERTER_EXE === "1" : true,
     fromCache: Boolean(fromCache),
     runResult: runResult || null,
     failureCode: "",
@@ -2507,6 +2748,10 @@ async function convertDocumentToPdf(sourcePath) {
   }
 
   if (ext === ".pdf") {
+    sendConvertStatus("표시", 100, "PDF 문서를 바로 열고 있습니다.", {
+      sourceExt: ext,
+      convertMode: "native-pdf"
+    });
     return {
       sourcePath: resolved,
       sourceExt: ext,
@@ -2527,31 +2772,62 @@ async function convertDocumentToPdf(sourcePath) {
 
   let warningMessage = "";
   let errorCode = "";
+  sendConvertStatus("엔진 확인", 5, "변환 엔진을 확인하고 있습니다.", {
+    sourceExt: ext
+  });
 
   if (OFFICE_EXTENSIONS.has(ext)) {
+    sendConvertStatus("변환", 35, "문서를 PDF로 변환하고 있습니다.", {
+      sourceExt: ext
+    });
     const officeResult = await convertOfficeFileToPdf(resolved, ext);
     if (officeResult.ok && officeResult.pdfPath && fs.existsSync(officeResult.pdfPath)) {
-      return {
-        sourcePath: resolved,
+      sendConvertStatus("검사", 70, "변환 결과를 검사하고 있습니다.", {
         sourceExt: ext,
-        converted: true,
-        convertMode: officeResult.engine || "office-com",
-        warningMessage: officeResult.warningMessage || "",
-        errorCode: "",
-        convertDiagnostics: {
+        selectedMode: officeResult.engine || "office-com"
+      });
+      const officeValidation = await validateConvertedPdfPath(officeResult.pdfPath);
+      if (!officeValidation.ok) {
+        warningMessage = buildConversionWarning(
+          ext,
+          officeValidation.reason,
+          "변환 결과 PDF가 손상되어 호환 보기로 전환했습니다."
+        );
+        errorCode = officeValidation.errorCode || "INVALID_CONVERTED_PDF";
+      } else {
+        sendConvertStatus("표시", 100, "문서를 화면에 표시합니다.", {
+          sourceExt: ext,
           selectedMode: officeResult.engine || "office-com",
-          candidateScores: [],
-          fallbackReason: ""
-        },
-        sheetMap: Array.isArray(officeResult.sheetMap) ? officeResult.sheetMap : [],
-        pdfPath: officeResult.pdfPath,
-        pdfBuffer: await fsp.readFile(officeResult.pdfPath)
-      };
+          pageCount: officeValidation.pageCount
+        });
+        return {
+          sourcePath: resolved,
+          sourceExt: ext,
+          converted: true,
+          convertMode: officeResult.engine || "office-com",
+          warningMessage: officeResult.warningMessage || "",
+          errorCode: "",
+          convertDiagnostics: {
+            selectedMode: officeResult.engine || "office-com",
+            validationPassed: true,
+            pageCount: officeValidation.pageCount,
+            candidateScores: [],
+            fallbackReason: ""
+          },
+          sheetMap: Array.isArray(officeResult.sheetMap) ? officeResult.sheetMap : [],
+          pdfPath: officeResult.pdfPath,
+          pdfBuffer: await fsp.readFile(officeResult.pdfPath)
+        };
+      }
+    } else {
+      warningMessage = officeResult.warningMessage || "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
+      errorCode = officeResult.errorCode || "";
     }
-    warningMessage = officeResult.warningMessage || "고품질 변환 엔진을 찾지 못해 텍스트 기반 보기 모드로 변환했습니다.";
-    errorCode = officeResult.errorCode || "";
   } else if (HWP_EXTENSIONS.has(ext)) {
     logConvertTrace("hwp-open-start", { source: path.basename(resolved), ext });
+    sendConvertStatus("변환", 30, "한글 문서를 변환하고 있습니다.", {
+      sourceExt: ext
+    });
     const hwpSaveAsPdfPath = createConvertedPdfPath(resolved, "hwp-saveas");
     const hwpPrintPdfPath = createConvertedPdfPath(resolved, "hwp-print-pdf");
     const hwpConverterExePdfPath = createConvertedPdfPath(resolved, "hwp-converter-exe");
@@ -2582,32 +2858,42 @@ async function convertDocumentToPdf(sourcePath) {
         }
       }
       if (!selectorInvalidReason) {
-        logConvertTrace("hwp-meta-hit", {
-          selectedMode: selectorMeta.selectedMode,
-          analysisMode: selectorMeta.analysisMode || "quick",
-          source: path.basename(resolved)
-        });
-        return {
-          sourcePath: resolved,
-          sourceExt: ext,
-          converted: true,
-          convertMode: selectorMeta.selectedMode,
-          warningMessage: selectorMeta.warningMessage || "",
-          errorCode: selectorMeta.warningMessage ? "RENDER_ARTIFACT_DETECTED" : "",
-          convertDiagnostics: {
-            selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+        const cachedValidation = await validateConvertedPdfPath(selectorMeta.selectedPdfPath);
+        if (cachedValidation.ok) {
+          sendConvertStatus("표시", 100, "검증된 캐시 문서를 바로 표시합니다.", {
+            sourceExt: ext,
+            selectedMode: selectorMeta.selectedMode,
+            pageCount: cachedValidation.pageCount
+          });
+          logConvertTrace("hwp-meta-hit", {
             selectedMode: selectorMeta.selectedMode,
             analysisMode: selectorMeta.analysisMode || "quick",
-            candidateScores: Array.isArray(selectorMeta.candidateScores) ? selectorMeta.candidateScores : [],
-            candidateFailures: Array.isArray(selectorMeta.candidateFailures) ? selectorMeta.candidateFailures : [],
-            pageCount: Number(selectorMeta.pageCount || 0),
-            artifactScore: Number(selectorMeta.artifactScore || 0),
-            fallbackReason: selectorMeta.fallbackReason || selectorMeta.warningMessage || ""
-          },
-          sheetMap: [],
-          pdfPath: selectorMeta.selectedPdfPath,
-          pdfBuffer: await fsp.readFile(selectorMeta.selectedPdfPath)
-        };
+            source: path.basename(resolved)
+          });
+          return {
+            sourcePath: resolved,
+            sourceExt: ext,
+            converted: true,
+            convertMode: selectorMeta.selectedMode,
+            warningMessage: selectorMeta.warningMessage || "",
+            errorCode: selectorMeta.warningMessage ? "RENDER_ARTIFACT_DETECTED" : "",
+            convertDiagnostics: {
+              selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
+              selectedMode: selectorMeta.selectedMode,
+              validationPassed: true,
+              analysisMode: selectorMeta.analysisMode || "quick",
+              candidateScores: Array.isArray(selectorMeta.candidateScores) ? selectorMeta.candidateScores : [],
+              candidateFailures: Array.isArray(selectorMeta.candidateFailures) ? selectorMeta.candidateFailures : [],
+              pageCount: Number(cachedValidation.pageCount || selectorMeta.pageCount || 0),
+              artifactScore: Number(selectorMeta.artifactScore || 0),
+              fallbackReason: selectorMeta.fallbackReason || selectorMeta.warningMessage || ""
+            },
+            sheetMap: [],
+            pdfPath: selectorMeta.selectedPdfPath,
+            pdfBuffer: await fsp.readFile(selectorMeta.selectedPdfPath)
+          };
+        }
+        selectorInvalidReason = cachedValidation.reason || "cached_pdf_invalid";
       }
       logConvertTrace("hwp-meta-rejected", {
         selectedMode: selectorMeta.selectedMode,
@@ -2616,6 +2902,9 @@ async function convertDocumentToPdf(sourcePath) {
       });
     }
 
+    sendConvertStatus("변환", 45, "한글 변환 후보를 생성하고 있습니다.", {
+      sourceExt: ext
+    });
     const hwpSaveAsCached = readCachedPdf(hwpSaveAsPdfPath);
     let saveAsCandidate = hwpSaveAsCached
       ? await collectHwpCandidate({
@@ -2637,6 +2926,10 @@ async function convertDocumentToPdf(sourcePath) {
     hwpCandidates.push(saveAsCandidate);
 
     if (isHwpQuickCandidateStable(saveAsCandidate)) {
+      sendConvertStatus("검사", 75, "빠른 품질 검사를 통과해 즉시 표시합니다.", {
+        sourceExt: ext,
+        selectedMode: saveAsCandidate.mode
+      });
       logConvertTrace("hwp-quick-pass", {
         selectedMode: saveAsCandidate.mode,
         score: saveAsCandidate.score,
@@ -2658,6 +2951,11 @@ async function convertDocumentToPdf(sourcePath) {
         artifactScore: Number(saveAsCandidate.artifactScore || 0),
         engineVersion: getConversionEngineToken(saveAsCandidate.mode)
       });
+      sendConvertStatus("표시", 100, "문서를 화면에 표시합니다.", {
+        sourceExt: ext,
+        selectedMode: saveAsCandidate.mode,
+        pageCount: Number(saveAsCandidate.pageCount || 0)
+      });
       return {
         sourcePath: resolved,
         sourceExt: ext,
@@ -2668,6 +2966,7 @@ async function convertDocumentToPdf(sourcePath) {
         convertDiagnostics: {
           selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
           selectedMode: saveAsCandidate.mode,
+          validationPassed: true,
           analysisMode: "quick",
           candidateScores,
           candidateFailures,
@@ -2721,25 +3020,27 @@ async function convertDocumentToPdf(sourcePath) {
     }
     hwpCandidates.push(printCandidate);
 
-    const hwpConverterExeCached = readCachedPdf(hwpConverterExePdfPath);
-    const converterExeCandidate = hwpConverterExeCached
-      ? await collectHwpCandidate({
-        mode: "hwp-converter-exe",
-        pdfPath: hwpConverterExeCached,
-        fromCache: true,
-        analysisMode: "full"
-      })
-      : await (async () => {
-        hwpConverterExeResult = await convertWithHancomConverterExe(resolved, hwpConverterExePdfPath);
-        return collectHwpCandidate({
+    if (process.env.LOOKUP_ENABLE_HWP_CONVERTER_EXE === "1") {
+      const hwpConverterExeCached = readCachedPdf(hwpConverterExePdfPath);
+      const converterExeCandidate = hwpConverterExeCached
+        ? await collectHwpCandidate({
           mode: "hwp-converter-exe",
-          pdfPath: hwpConverterExePdfPath,
-          fromCache: false,
-          runResult: hwpConverterExeResult,
+          pdfPath: hwpConverterExeCached,
+          fromCache: true,
           analysisMode: "full"
-        });
-      })();
-    hwpCandidates.push(converterExeCandidate);
+        })
+        : await (async () => {
+          hwpConverterExeResult = await convertWithHancomConverterExe(resolved, hwpConverterExePdfPath);
+          return collectHwpCandidate({
+            mode: "hwp-converter-exe",
+            pdfPath: hwpConverterExePdfPath,
+            fromCache: false,
+            runResult: hwpConverterExeResult,
+            analysisMode: "full"
+          });
+        })();
+      hwpCandidates.push(converterExeCandidate);
+    }
 
     applyHwpPageCountGate(hwpCandidates);
     let selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
@@ -2774,6 +3075,22 @@ async function convertDocumentToPdf(sourcePath) {
     }
 
     if (selectedCandidate?.available && selectedCandidate.path && fs.existsSync(selectedCandidate.path)) {
+      sendConvertStatus("검사", 82, "변환 결과를 최종 검사하고 있습니다.", {
+        sourceExt: ext,
+        selectedMode: selectedCandidate.mode
+      });
+      const selectedValidation = await validateConvertedPdfPath(selectedCandidate.path);
+      if (!selectedValidation.ok) {
+        selectedCandidate.selectionEligible = false;
+        selectedCandidate.available = false;
+        selectedCandidate.failureCode = selectedValidation.errorCode || "INVALID_CONVERTED_PDF";
+        selectedCandidate.excludedReason = "INVALID_CONVERTED_PDF";
+        applyHwpPageCountGate(hwpCandidates);
+        selectedCandidate = chooseBestHwpCandidate(hwpCandidates);
+      }
+    }
+
+    if (selectedCandidate?.available && selectedCandidate.path && fs.existsSync(selectedCandidate.path)) {
       const selectedMode = selectedCandidate.mode;
       const selectionWarning = buildHwpSelectionWarning(selectedCandidate, hwpCandidates);
       let selectionErrorCode = "";
@@ -2804,6 +3121,11 @@ async function convertDocumentToPdf(sourcePath) {
         artifactScore: Number(selectedCandidate.artifactScore || 0),
         engineVersion: getConversionEngineToken(selectedMode)
       });
+      sendConvertStatus("표시", 100, "문서를 화면에 표시합니다.", {
+        sourceExt: ext,
+        selectedMode,
+        pageCount: Number(selectedCandidate.pageCount || 0)
+      });
       return {
         sourcePath: resolved,
         sourceExt: ext,
@@ -2814,6 +3136,7 @@ async function convertDocumentToPdf(sourcePath) {
         convertDiagnostics: {
           selectorVersion: HWP_QUALITY_SELECTOR_VERSION,
           selectedMode,
+          validationPassed: true,
           analysisMode: selectedCandidate.analysis?.analysisMode || "full",
           candidateScores,
           candidateFailures,
@@ -2877,6 +3200,10 @@ async function convertDocumentToPdf(sourcePath) {
     const fallbackPdfPath = createConvertedPdfPath(resolved, "fallback");
     const fallbackCache = readCachedPdf(fallbackPdfPath, { maxAgeMs: FALLBACK_CACHE_TTL_MS });
     if (fallbackCache) {
+      sendConvertStatus("표시", 100, "호환 보기 문서를 표시합니다.", {
+        sourceExt: ext,
+        selectedMode: "fallback-text"
+      });
       return {
         sourcePath: resolved,
         sourceExt: ext,
@@ -2891,6 +3218,9 @@ async function convertDocumentToPdf(sourcePath) {
       };
     }
     const extractedText = await extractDocumentTextForFallback(resolved, ext);
+    sendConvertStatus("변환", 90, "호환 보기 문서를 생성하고 있습니다.", {
+      sourceExt: ext
+    });
     const html = buildFallbackHtml({
       sourcePath: resolved,
       sourceExt: ext,
@@ -2899,6 +3229,10 @@ async function convertDocumentToPdf(sourcePath) {
     });
     const fallbackPdf = await htmlToPdfBuffer(html);
     await fsp.writeFile(fallbackPdfPath, fallbackPdf);
+    sendConvertStatus("표시", 100, "호환 보기 문서를 표시합니다.", {
+      sourceExt: ext,
+      selectedMode: "fallback-text"
+    });
     return {
       sourcePath: resolved,
       sourceExt: ext,
@@ -2917,25 +3251,43 @@ async function convertDocumentToPdf(sourcePath) {
     const xlsxHtmlPdfPath = createConvertedPdfPath(resolved, "xlsx-html");
     const xlsxHtmlCache = readCachedPdf(xlsxHtmlPdfPath);
     if (xlsxHtmlCache) {
-      return {
-        sourcePath: resolved,
-        sourceExt: ext,
-        converted: true,
-        convertMode: "xlsx-html",
-        warningMessage: warningMessage || "표 보기 모드로 열었습니다.",
-        errorCode: "",
-        convertDiagnostics: {
+      const xlsxValidation = await validateConvertedPdfPath(xlsxHtmlCache);
+      if (xlsxValidation.ok) {
+        sendConvertStatus("표시", 100, "엑셀 시트 보기 문서를 표시합니다.", {
+          sourceExt: ext,
           selectedMode: "xlsx-html",
-          candidateScores: [],
-          fallbackReason: warningMessage || ""
-        },
-        sheetMap: readSpreadsheetSheetNames(resolved).map((sheetName) => ({ sheetName, startPage: null, endPage: null })),
-        pdfPath: xlsxHtmlCache,
-        pdfBuffer: await fsp.readFile(xlsxHtmlCache)
-      };
+          pageCount: xlsxValidation.pageCount
+        });
+        return {
+          sourcePath: resolved,
+          sourceExt: ext,
+          converted: true,
+          convertMode: "xlsx-html",
+          warningMessage: warningMessage || "표 보기 모드로 열었습니다.",
+          errorCode: "",
+          convertDiagnostics: {
+            selectedMode: "xlsx-html",
+            validationPassed: true,
+            pageCount: xlsxValidation.pageCount,
+            candidateScores: [],
+            fallbackReason: warningMessage || ""
+          },
+          sheetMap: readSpreadsheetSheetNames(resolved).map((sheetName) => ({ sheetName, startPage: null, endPage: null })),
+          pdfPath: xlsxHtmlCache,
+          pdfBuffer: await fsp.readFile(xlsxHtmlCache)
+        };
+      }
+      try {
+        await fsp.unlink(xlsxHtmlCache);
+      } catch (_error) {
+        // ignore invalid xlsx fallback cache cleanup failure
+      }
     }
     if (errorCode !== "EMPTY_DOCUMENT") {
       try {
+        sendConvertStatus("변환", 88, "엑셀 시트 보기 문서를 생성하고 있습니다.", {
+          sourceExt: ext
+        });
         const xlsxFallback = buildSpreadsheetFallbackHtml({
           sourcePath: resolved,
           sourceExt: ext,
@@ -2944,6 +3296,15 @@ async function convertDocumentToPdf(sourcePath) {
         if (xlsxFallback?.html) {
           const xlsxPdf = await htmlToPdfBuffer(xlsxFallback.html);
           await fsp.writeFile(xlsxHtmlPdfPath, xlsxPdf);
+          const xlsxValidation = await validateConvertedPdfPath(xlsxHtmlPdfPath);
+          if (!xlsxValidation.ok) {
+            throw new Error(`xlsx_html_invalid_pdf:${xlsxValidation.reason}`);
+          }
+          sendConvertStatus("표시", 100, "엑셀 시트 보기 문서를 표시합니다.", {
+            sourceExt: ext,
+            selectedMode: "xlsx-html",
+            pageCount: xlsxValidation.pageCount
+          });
           return {
             sourcePath: resolved,
             sourceExt: ext,
@@ -2953,6 +3314,8 @@ async function convertDocumentToPdf(sourcePath) {
             errorCode: "",
             convertDiagnostics: {
               selectedMode: "xlsx-html",
+              validationPassed: true,
+              pageCount: xlsxValidation.pageCount,
               candidateScores: [],
               fallbackReason: warningMessage || "고품질 변환 엔진을 찾지 못해 표 보기 모드로 전환했습니다."
             },
@@ -2970,22 +3333,37 @@ async function convertDocumentToPdf(sourcePath) {
   const fallbackPdfPath = createConvertedPdfPath(resolved, "fallback");
   const fallbackCache = readCachedPdf(fallbackPdfPath, { maxAgeMs: FALLBACK_CACHE_TTL_MS });
   if (fallbackCache) {
-    return {
-      sourcePath: resolved,
-      sourceExt: ext,
-      converted: true,
-      convertMode: "fallback",
-      warningMessage,
-      errorCode,
-      convertDiagnostics: {
-        selectedMode: "fallback",
-        candidateScores: [],
-        fallbackReason: warningMessage || ""
-      },
-      sheetMap: [],
-      pdfPath: fallbackCache,
-      pdfBuffer: await fsp.readFile(fallbackCache)
-    };
+    const fallbackValidation = await validateConvertedPdfPath(fallbackCache);
+    if (fallbackValidation.ok) {
+      sendConvertStatus("표시", 100, "호환 보기 문서를 표시합니다.", {
+        sourceExt: ext,
+        selectedMode: "fallback-text",
+        pageCount: fallbackValidation.pageCount
+      });
+      return {
+        sourcePath: resolved,
+        sourceExt: ext,
+        converted: true,
+        convertMode: "fallback",
+        warningMessage,
+        errorCode,
+        convertDiagnostics: {
+          selectedMode: "fallback-text",
+          validationPassed: true,
+          pageCount: fallbackValidation.pageCount,
+          candidateScores: [],
+          fallbackReason: warningMessage || ""
+        },
+        sheetMap: [],
+        pdfPath: fallbackCache,
+        pdfBuffer: await fsp.readFile(fallbackCache)
+      };
+    }
+    try {
+      await fsp.unlink(fallbackCache);
+    } catch (_error) {
+      // ignore stale fallback cache cleanup failure
+    }
   }
 
   const extractedText = await extractDocumentTextForFallback(resolved, ext);
@@ -2998,6 +3376,15 @@ async function convertDocumentToPdf(sourcePath) {
   });
   const fallbackPdf = await htmlToPdfBuffer(html);
   await fsp.writeFile(fallbackPdfPath, fallbackPdf);
+  const fallbackValidation = await validateConvertedPdfPath(fallbackPdfPath);
+  if (!fallbackValidation.ok) {
+    throw new Error("INVALID_CONVERTED_PDF");
+  }
+  sendConvertStatus("표시", 100, "호환 보기 문서를 표시합니다.", {
+    sourceExt: ext,
+    selectedMode: "fallback-text",
+    pageCount: fallbackValidation.pageCount
+  });
 
   return {
     sourcePath: resolved,
@@ -3007,7 +3394,9 @@ async function convertDocumentToPdf(sourcePath) {
     warningMessage,
     errorCode,
     convertDiagnostics: {
-      selectedMode: "fallback",
+      selectedMode: "fallback-text",
+      validationPassed: true,
+      pageCount: fallbackValidation.pageCount,
       candidateScores: [],
       fallbackReason: warningMessage || ""
     },
@@ -3464,11 +3853,12 @@ async function showOpenDocumentDialog() {
     title: "문서 열기",
     properties: ["openFile"],
     filters: [
-      { name: "지원 문서", extensions: ["pdf", "hwp", "hwpx", "doc", "docx", "xls", "xlsx"] },
+      { name: "지원 문서", extensions: ["pdf", "hwp", "hwpx", "doc", "docx", "xls", "xlsx", "ppt", "pptx"] },
       { name: "PDF 문서", extensions: ["pdf"] },
       { name: "한글 문서", extensions: ["hwp", "hwpx"] },
       { name: "Word 문서", extensions: ["doc", "docx"] },
-      { name: "Excel 문서", extensions: ["xls", "xlsx"] }
+      { name: "Excel 문서", extensions: ["xls", "xlsx"] },
+      { name: "PowerPoint 문서", extensions: ["ppt", "pptx"] }
     ]
   });
 
@@ -3525,13 +3915,17 @@ ipcMain.handle("pdf:read-file", async (_event, filePath) => {
 
 ipcMain.handle("document:open", async (_event, filePath) => {
   try {
+    sendConvertStatus("엔진 확인", 2, "문서를 열 준비를 하고 있습니다.", {
+      sourceExt: getFileExtension(filePath || "")
+    });
     const converted = await convertDocumentToPdf(filePath);
+    const publicConvertMode = normalizePublicConvertMode(converted.convertMode, converted.converted);
     return {
       ok: true,
       sourcePath: converted.sourcePath,
       sourceExt: converted.sourceExt,
       converted: converted.converted,
-      convertMode: converted.convertMode,
+      convertMode: publicConvertMode,
       warningMessage: converted.warningMessage,
       errorCode: converted.errorCode || "",
       convertDiagnostics: converted.convertDiagnostics || {
@@ -3554,13 +3948,17 @@ ipcMain.handle("document:open", async (_event, filePath) => {
 
 ipcMain.handle("document:convert", async (_event, filePath) => {
   try {
+    sendConvertStatus("엔진 확인", 2, "문서를 변환할 준비를 하고 있습니다.", {
+      sourceExt: getFileExtension(filePath || "")
+    });
     const converted = await convertDocumentToPdf(filePath);
+    const publicConvertMode = normalizePublicConvertMode(converted.convertMode, converted.converted);
     return {
       ok: true,
       sourcePath: converted.sourcePath,
       sourceExt: converted.sourceExt,
       converted: converted.converted,
-      convertMode: converted.convertMode,
+      convertMode: publicConvertMode,
       warningMessage: converted.warningMessage,
       errorCode: converted.errorCode || "",
       convertDiagnostics: converted.convertDiagnostics || {
