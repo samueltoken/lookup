@@ -137,6 +137,16 @@ const i18n = {
     textMemoAdded: "텍스트 메모를 추가했습니다.",
     undoDone: "되돌리기 완료",
     redoDone: "다시하기 완료",
+    convertRetry: "다시 시도",
+    convertOpenCompatibility: "호환 보기로 열기",
+    convertCopyDiagnostics: "진단 정보 복사",
+    convertDiagnosticsCopied: "진단 정보를 복사했습니다.",
+    convertOpeningTitle: "한글 문서를 여는 중입니다.",
+    convertOpeningInitStep: "변환 엔진을 확인하고 있습니다.",
+    convertOpeningStep: "원본 레이아웃 변환을 시도합니다.",
+    convertFailureTitle: "원본 변환에 실패했습니다.",
+    convertFailureHint: "다시 시도하거나 호환 보기로 열어주세요.",
+    convertOverlayHelper: "문서 크기에 따라 시간이 조금 걸릴 수 있습니다.",
     updateStageIdle: "업데이트 대기",
     updateStageChecking: "업데이트 확인중",
     updateStageDownloading: "다운로드중",
@@ -149,6 +159,7 @@ const i18n = {
     updateNotesFallback: "변경 사항 요약을 불러오지 못했습니다.",
     updateNotesClose: "확인",
     updateNotesSectionGeneral: "변경 사항",
+    updateNotesSectionAssets: "포함 파일",
     copyDeveloperEmail: "개발자 문의 이메일 복사",
     languageKo: "한국어",
     languageEn: "English",
@@ -160,7 +171,7 @@ const i18n = {
     openErrorPermission: "파일 권한이 없어 열 수 없습니다.",
     openErrorUnsupported: "지원하지 않는 파일 형식입니다.",
     openErrorConvert: "문서 변환에 실패했습니다. 파일을 다시 확인해 주세요.",
-    openErrorEngineMissing: "변환 엔진을 찾지 못했습니다. Word/Excel/한컴 또는 LibreOffice 설치를 확인해 주세요.",
+    openErrorEngineMissing: "원본 변환 엔진을 찾지 못해 호환 보기로 전환했습니다.",
     openErrorTimeout: "변환 시간이 오래 걸려 중단되었습니다. 잠시 후 다시 시도해 주세요.",
     openErrorEmptyDocument: "문서에 표시할 내용이 없습니다.",
     openErrorGeneric: "문서를 열지 못했습니다.",
@@ -253,6 +264,16 @@ const i18n = {
     textMemoAdded: "Text memo added.",
     undoDone: "Undo complete",
     redoDone: "Redo complete",
+    convertRetry: "Retry",
+    convertOpenCompatibility: "Open in Compatibility Mode",
+    convertCopyDiagnostics: "Copy Diagnostics",
+    convertDiagnosticsCopied: "Copied diagnostics.",
+    convertOpeningTitle: "Opening Hangul document.",
+    convertOpeningInitStep: "Checking conversion engine.",
+    convertOpeningStep: "Trying original layout conversion.",
+    convertFailureTitle: "Original conversion failed.",
+    convertFailureHint: "Retry or open in compatibility mode.",
+    convertOverlayHelper: "This may take longer for large files.",
     updateStageIdle: "Idle",
     updateStageChecking: "Checking for updates",
     updateStageDownloading: "Downloading update",
@@ -265,6 +286,7 @@ const i18n = {
     updateNotesFallback: "Unable to load the release notes.",
     updateNotesClose: "Close",
     updateNotesSectionGeneral: "Release notes",
+    updateNotesSectionAssets: "Included files",
     copyDeveloperEmail: "Copy Developer Email",
     languageKo: "한국어",
     languageEn: "English",
@@ -276,7 +298,7 @@ const i18n = {
     openErrorPermission: "No permission to open this file.",
     openErrorUnsupported: "Unsupported file format.",
     openErrorConvert: "Failed to convert this document.",
-    openErrorEngineMissing: "No conversion engine found. Check Word/Excel/Hancom or LibreOffice installation.",
+    openErrorEngineMissing: "Original conversion engine is unavailable. Switched to compatibility view.",
     openErrorTimeout: "Conversion timed out. Please try again.",
     openErrorEmptyDocument: "No printable content found in this document.",
     openErrorGeneric: "Unable to open this document.",
@@ -413,6 +435,12 @@ const state = {
   thumbRenderTasks: new Map(),
   documentOpenInProgress: false,
   lastOpenPath: "",
+  convertOverlayTitle: "문서를 여는 중입니다.",
+  convertOverlayStep: "",
+  convertOverlayPercent: 0,
+  convertFailureCode: "",
+  convertFailureMessage: "",
+  convertFailureDetail: "",
   historyPast: [],
   historyFuture: [],
   historyRestoring: false,
@@ -466,9 +494,16 @@ const els = {
   viewerPanel: document.getElementById("viewerPanel"),
   pagesContainer: document.getElementById("pagesContainer"),
   emptyHint: document.getElementById("emptyHint"),
+  documentWarningBanner: document.getElementById("documentWarningBanner"),
   convertOverlay: document.getElementById("convertOverlay"),
   convertOverlayTitle: document.getElementById("convertOverlayTitle"),
   convertOverlayMessage: document.getElementById("convertOverlayMessage"),
+  convertOverlayProgressBar: document.getElementById("convertOverlayProgressBar"),
+  convertOverlayPercent: document.getElementById("convertOverlayPercent"),
+  convertOverlayHint: document.getElementById("convertOverlayHint"),
+  convertOverlayPulse: document.getElementById("convertOverlayPulse"),
+  convertOpenCompatBtn: document.getElementById("convertOpenCompatBtn"),
+  convertCopyDiagBtn: document.getElementById("convertCopyDiagBtn"),
   convertRetryBtn: document.getElementById("convertRetryBtn"),
   fullscreenMiniBar: document.getElementById("fullscreenMiniBar"),
   toggleFullscreenViewModeBtn: document.getElementById("toggleFullscreenViewModeBtn"),
@@ -522,18 +557,113 @@ function setStatus(message, isError = false) {
   els.statusText.style.color = isError ? "#d73333" : "";
 }
 
-function showConvertOverlay(title, message, retryVisible = false) {
+function setDocumentWarning(message = "") {
+  if (!els.documentWarningBanner) {
+    return;
+  }
+  const text = String(message || "").trim();
+  if (!text) {
+    els.documentWarningBanner.textContent = "";
+    els.documentWarningBanner.classList.add("hidden");
+    return;
+  }
+  els.documentWarningBanner.textContent = text;
+  els.documentWarningBanner.classList.remove("hidden");
+}
+
+function sanitizeCompatibilityWarning(value = "") {
+  const normalized = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "";
+  }
+  const stripped = normalized
+    .replace(/\([^)]+(?:lookup-hwp-workers|\.ps1|[a-z]:\\)[^)]+\)/gi, "")
+    .replace(/[a-z]:\\[^ )]+/gi, "")
+    .replace(/lookup-hwp-workers[^ )]*/gi, "")
+    .replace(/�{2,}/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!stripped) {
+    return "";
+  }
+  return stripped.slice(0, 220);
+}
+
+function resolveCompatibilityWarning(meta = {}) {
+  const explicit = sanitizeCompatibilityWarning(meta.warningMessage || "");
+  if (explicit) {
+    return explicit;
+  }
+  const diagnostics = meta.convertDiagnostics && typeof meta.convertDiagnostics === "object" ? meta.convertDiagnostics : null;
+  const qualityTier = String(diagnostics?.qualityTier || "").trim();
+  if (qualityTier === "compatibility-layout" || qualityTier === "compatibility-text") {
+    return "호환 보기입니다. 원본과 배치가 다를 수 있습니다.";
+  }
+  const mode = String(meta.convertMode || "").toLowerCase();
+  if (mode && mode !== "native" && mode !== "native-pdf" && mode !== "hancom-com-saveas" && mode !== "hancom-com-export") {
+    return "호환 보기입니다. 원본과 배치가 다를 수 있습니다.";
+  }
+  return "";
+}
+
+function showConvertOverlay(payloadOrTitle, message, retryVisible = false) {
   if (!els.convertOverlay) {
     return;
   }
+  const payload =
+    payloadOrTitle && typeof payloadOrTitle === "object"
+      ? payloadOrTitle
+      : {
+        title: payloadOrTitle,
+        step: message,
+        retryVisible
+      };
+  const titleText = String(payload.title || "문서를 여는 중입니다.").trim();
+  const stepText = String(payload.step || "잠시만 기다려주세요.").trim();
+  const helperText = String(payload.helper || "문서 크기에 따라 시간이 조금 걸릴 수 있습니다.").trim();
+  const percentValue = Number.isFinite(Number(payload.percent)) ? clamp(Number(payload.percent), 0, 100) : null;
+  const pulseActive = payload.pulse !== false;
+  const retryShown = payload.retryVisible === true || retryVisible === true;
+  const compatShown = payload.openCompatVisible === true;
+  const copyDiagShown = payload.copyDiagnosticsVisible === true;
+  state.convertOverlayTitle = titleText;
+  state.convertOverlayStep = stepText;
+  state.convertOverlayPercent = percentValue ?? state.convertOverlayPercent;
   if (els.convertOverlayTitle) {
-    els.convertOverlayTitle.textContent = title || "문서를 여는 중입니다.";
+    els.convertOverlayTitle.textContent = titleText;
   }
   if (els.convertOverlayMessage) {
-    els.convertOverlayMessage.textContent = message || "잠시만 기다려주세요.";
+    els.convertOverlayMessage.textContent = stepText;
+  }
+  if (els.convertOverlayHint) {
+    els.convertOverlayHint.textContent = helperText;
+  }
+  if (els.convertOverlayProgressBar) {
+    const width = percentValue === null ? state.convertOverlayPercent : percentValue;
+    const safeWidth = clamp(width, 0, 100);
+    els.convertOverlayProgressBar.style.width = `${safeWidth}%`;
+    const track = els.convertOverlayProgressBar.parentElement;
+    if (track && track.getAttribute("role") === "progressbar") {
+      track.setAttribute("aria-valuenow", String(Math.round(safeWidth)));
+    }
+  }
+  if (els.convertOverlayPercent) {
+    const labelPercent = percentValue === null ? state.convertOverlayPercent : percentValue;
+    els.convertOverlayPercent.textContent = `${Math.round(clamp(labelPercent, 0, 100))}%`;
+  }
+  if (els.convertOverlayPulse) {
+    els.convertOverlayPulse.classList.toggle("hidden", !pulseActive);
   }
   if (els.convertRetryBtn) {
-    els.convertRetryBtn.classList.toggle("hidden", !retryVisible);
+    els.convertRetryBtn.classList.toggle("hidden", !retryShown);
+  }
+  if (els.convertOpenCompatBtn) {
+    els.convertOpenCompatBtn.classList.toggle("hidden", !compatShown);
+  }
+  if (els.convertCopyDiagBtn) {
+    els.convertCopyDiagBtn.classList.toggle("hidden", !copyDiagShown);
   }
   els.convertOverlay.classList.remove("hidden");
 }
@@ -543,21 +673,45 @@ function hideConvertOverlay() {
     return;
   }
   els.convertOverlay.classList.add("hidden");
+  state.convertOverlayStep = "";
+  state.convertOverlayPercent = 0;
   if (els.convertRetryBtn) {
     els.convertRetryBtn.classList.add("hidden");
   }
+  if (els.convertOpenCompatBtn) {
+    els.convertOpenCompatBtn.classList.add("hidden");
+  }
+  if (els.convertCopyDiagBtn) {
+    els.convertCopyDiagBtn.classList.add("hidden");
+  }
+  if (els.convertOverlayProgressBar) {
+    els.convertOverlayProgressBar.style.width = "0%";
+    const track = els.convertOverlayProgressBar.parentElement;
+    if (track && track.getAttribute("role") === "progressbar") {
+      track.setAttribute("aria-valuenow", "0");
+    }
+  }
+  if (els.convertOverlayPercent) {
+    els.convertOverlayPercent.textContent = "0%";
+  }
+  if (els.convertOverlayPulse) {
+    els.convertOverlayPulse.classList.add("hidden");
+  }
 }
 
-function mapConvertStageLabel(stage) {
+function mapConvertStageStep(stage) {
   const normalized = String(stage || "").trim();
   if (!normalized) {
-    return "문서를 여는 중입니다.";
+    return "변환 단계를 준비하고 있습니다.";
   }
   if (normalized.includes("엔진")) {
-    return "한글 문서를 여는 중입니다.";
+    return "변환 엔진을 확인하고 있습니다.";
+  }
+  if (normalized.includes("열기")) {
+    return "문서를 여는 중입니다.";
   }
   if (normalized.includes("변환")) {
-    return "원본 레이아웃 변환을 시도합니다.";
+    return "원본 레이아웃을 PDF로 변환하고 있습니다.";
   }
   if (normalized.includes("검사")) {
     return "변환 결과를 확인하고 있습니다.";
@@ -566,6 +720,100 @@ function mapConvertStageLabel(stage) {
     return "문서를 화면에 표시합니다.";
   }
   return normalized;
+}
+
+function getConvertStagePercent(stage) {
+  const normalized = String(stage || "").trim();
+  if (!normalized) {
+    return 10;
+  }
+  if (normalized.includes("엔진")) {
+    return 10;
+  }
+  if (normalized.includes("열기")) {
+    return 25;
+  }
+  if (normalized.includes("변환")) {
+    return 60;
+  }
+  if (normalized.includes("검사")) {
+    return 85;
+  }
+  if (normalized.includes("표시")) {
+    return 100;
+  }
+  return 40;
+}
+
+function buildConvertDiagnosticText() {
+  const parts = [
+    `time=${new Date().toISOString()}`,
+    `file=${state.lastOpenPath || "-"}`,
+    `errorCode=${state.convertFailureCode || "-"}`,
+    `message=${state.convertFailureMessage || "-"}`,
+    `detail=${state.convertFailureDetail || "-"}`
+  ];
+  return parts.join("\n");
+}
+
+async function openDocumentInCompatibilityMode() {
+  if (!state.lastOpenPath) {
+    return false;
+  }
+  const ext = getFileExt(state.lastOpenPath);
+  if (ext !== ".hwp" && ext !== ".hwpx") {
+    return false;
+  }
+  state.documentOpenInProgress = true;
+  state.convertFailureCode = "";
+  state.convertFailureMessage = "";
+  state.convertFailureDetail = "";
+  showConvertOverlay({
+    title: t("convertOpeningTitle"),
+    step: t("convertOpenCompatibility"),
+    percent: 18,
+    helper: t("convertOverlayHelper"),
+    retryVisible: false,
+    openCompatVisible: false,
+    copyDiagnosticsVisible: false,
+    pulse: true
+  });
+  try {
+    const payload = await window.lookupAPI.openDocument(state.lastOpenPath, { forceCompatibility: true });
+    if (payload?.ok === true && payload.data) {
+      await loadPdfFromBytes(payload.data, payload.sourcePath || state.lastOpenPath, payload);
+      return true;
+    }
+    const compatError = new Error(mapOpenErrorMessage(payload?.errorCode, payload?.message || ""));
+    compatError.lookupErrorCode = String(payload?.errorCode || "");
+    compatError.lookupRawMessage = String(payload?.message || "");
+    compatError.lookupDetail = String(payload?.diagnosticDetail || "");
+    throw compatError;
+  } catch (error) {
+    state.documentOpenInProgress = false;
+    const fallbackMessage = mapOpenErrorMessage(
+      error?.lookupErrorCode || "",
+      error?.lookupRawMessage || error?.message || ""
+    );
+    state.convertFailureCode = String(error?.lookupErrorCode || "");
+    state.convertFailureMessage = fallbackMessage;
+    state.convertFailureDetail = String(error?.lookupDetail || error?.lookupRawMessage || error?.message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1200);
+    showConvertOverlay({
+      title: t("convertFailureTitle"),
+      step: fallbackMessage,
+      percent: 100,
+      helper: t("convertFailureHint"),
+      retryVisible: true,
+      openCompatVisible: true,
+      copyDiagnosticsVisible: true,
+      pulse: false
+    });
+    setStatus(`파일 열기 실패: ${fallbackMessage}`, true);
+    return false;
+  }
 }
 
 function cloneAnnotationBucket(bucket) {
@@ -733,6 +981,15 @@ function applyLanguageToStaticTexts() {
     if (els.updateNotesCloseBtn) {
       els.updateNotesCloseBtn.textContent = t("updateNotesClose");
     }
+    if (els.convertRetryBtn) {
+      els.convertRetryBtn.textContent = t("convertRetry");
+    }
+    if (els.convertOpenCompatBtn) {
+      els.convertOpenCompatBtn.textContent = t("convertOpenCompatibility");
+    }
+    if (els.convertCopyDiagBtn) {
+      els.convertCopyDiagBtn.textContent = t("convertCopyDiagnostics");
+    }
     updateLanguageQuickButtons();
     applyRibbonTabSelection();
     updateSearchCountText();
@@ -848,7 +1105,26 @@ function getFileExt(filePath) {
   return normalized.slice(index);
 }
 
+function sanitizeUserFacingErrorText(value) {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) {
+    return "";
+  }
+  if (text.length > 180) {
+    return "";
+  }
+  if (
+    /lookup-hwp-workers|\.ps1|throw|exception|stack|\\users\\|[a-z]:\\|program files|object reference/i.test(text)
+  ) {
+    return "";
+  }
+  return text;
+}
+
 function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
+  const safeFallback = sanitizeUserFacingErrorText(fallbackMessage);
   switch (String(errorCode || "").toUpperCase()) {
     case "NOT_FOUND":
       return t("openErrorNotFound");
@@ -862,15 +1138,15 @@ function mapOpenErrorMessage(errorCode, fallbackMessage = "") {
     case "ENGINE_TIMEOUT":
       return t("openErrorTimeout");
     case "EMPTY_DOCUMENT":
-      return fallbackMessage || t("openErrorEmptyDocument");
+      return safeFallback || t("openErrorEmptyDocument");
     case "CONVERT_FAILED":
     case "INVALID_CONVERTED_PDF":
     case "PAGE_COUNT_ZERO":
-      return fallbackMessage || t("openErrorConvert");
+      return t("openErrorConvert");
     case "RENDER_ARTIFACT_DETECTED":
-      return fallbackMessage || t("openErrorConvert");
+      return t("openErrorConvert");
     default:
-      return fallbackMessage || t("openErrorGeneric");
+      return safeFallback || t("openErrorGeneric");
   }
 }
 
@@ -1363,6 +1639,10 @@ function parseReleaseNotesTree(releaseNotes) {
   let currentSection = null;
   let lastTopItem = null;
   let detectedVersion = "";
+  const versionOnlyPattern = /^(lookup\s*)?(version|버전)?\s*v?\d+\.\d+\.\d+(?:\s*(release|릴리즈))?$/i;
+  const assetNamePattern = /^(lookup-setup-[\w.\-]+\.exe(?:\.blockmap)?|latest\.yml|[\w.\-]+\.blockmap)$/i;
+  const isVersionOnlyText = (text) => versionOnlyPattern.test(String(text || "").trim());
+  const isAssetName = (text) => assetNamePattern.test(String(text || "").trim());
 
   const ensureSection = (title) => {
     const normalizedTitle = cleanReleaseNoteLineText(title || t("updateNotesSectionGeneral")) || t("updateNotesSectionGeneral");
@@ -1439,6 +1719,18 @@ function parseReleaseNotesTree(releaseNotes) {
       if (!text) {
         continue;
       }
+      if (isVersionOnlyText(text)) {
+        const versionMatch = text.match(/v?(\d+\.\d+\.\d+)/i);
+        if (versionMatch) {
+          detectedVersion = versionMatch[1];
+        }
+        continue;
+      }
+      if (isAssetName(text)) {
+        const assetSection = ensureSection(t("updateNotesSectionAssets"));
+        lastTopItem = ensureTopItem(assetSection, text, "asset");
+        continue;
+      }
       const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
       const depth = Math.max(0, Math.floor(indentSize / 2));
       if (depth > 0 && lastTopItem) {
@@ -1455,6 +1747,18 @@ function parseReleaseNotesTree(releaseNotes) {
 
     const plainText = cleanReleaseNoteLineText(trimmed.replace(/^[>\-•\d.)\s]+/, ""));
     if (!plainText) {
+      continue;
+    }
+    if (isVersionOnlyText(plainText)) {
+      const versionMatch = plainText.match(/v?(\d+\.\d+\.\d+)/i);
+      if (versionMatch) {
+        detectedVersion = versionMatch[1];
+      }
+      continue;
+    }
+    if (isAssetName(plainText)) {
+      const assetSection = ensureSection(t("updateNotesSectionAssets"));
+      lastTopItem = ensureTopItem(assetSection, plainText, "asset");
       continue;
     }
     const section = ensureSection(currentSection?.title || t("updateNotesSectionGeneral"));
@@ -3782,8 +4086,11 @@ async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
         : ` / ${String(meta.sourceExt || "").replace(".", "").toUpperCase()} 변환 열람`
       : "";
   setStatus(`열림: ${fileNameFromPath(filePath)} (${state.pageOrder.length}페이지)${convertTail}`);
-  if (meta.warningMessage) {
-    setStatus(meta.warningMessage);
+  const warningText = resolveCompatibilityWarning(meta);
+  if (warningText) {
+    setDocumentWarning(warningText);
+  } else {
+    setDocumentWarning("");
   }
 }
 
@@ -3796,7 +4103,21 @@ async function loadDocumentFromPath(filePath) {
   const ext = getFileExt(resolvedPath);
   state.documentOpenInProgress = true;
   state.lastOpenPath = resolvedPath;
-  showConvertOverlay("한글 문서를 여는 중입니다.", "원본 레이아웃 변환을 시도합니다.");
+  state.convertFailureCode = "";
+  state.convertFailureMessage = "";
+  state.convertFailureDetail = "";
+  setDocumentWarning("");
+  const isHwpFamily = ext === ".hwp" || ext === ".hwpx";
+  const overlayTitle = isHwpFamily ? t("convertOpeningTitle") : (state.language === "en" ? "Opening document." : "문서를 여는 중입니다.");
+  const overlayStep = isHwpFamily ? t("convertOpeningInitStep") : (state.language === "en" ? "Preparing document." : "문서를 준비하고 있습니다.");
+  showConvertOverlay({
+    title: overlayTitle,
+    step: overlayStep,
+    percent: 8,
+    helper: t("convertOverlayHelper"),
+    retryVisible: false,
+    pulse: true
+  });
   setStatus(state.language === "en" ? "Opening document..." : "문서를 열고 있습니다...");
 
   try {
@@ -3822,17 +4143,40 @@ async function loadDocumentFromPath(filePath) {
       return true;
     }
 
-    throw new Error(mapOpenErrorMessage(payload?.errorCode, payload?.message));
+    const openError = new Error(mapOpenErrorMessage(payload?.errorCode, payload?.message));
+    openError.lookupErrorCode = String(payload?.errorCode || "");
+    openError.lookupRawMessage = String(payload?.message || "");
+    openError.lookupDetail = String(payload?.diagnosticDetail || "");
+    throw openError;
   } catch (error) {
-    const fallbackMessage = mapOpenErrorMessage("", error?.message || "");
+    const fallbackMessage = mapOpenErrorMessage(
+      error?.lookupErrorCode || "",
+      error?.lookupRawMessage || error?.message || ""
+    );
     state.documentOpenInProgress = false;
+    state.convertFailureCode = String(error?.lookupErrorCode || "");
+    state.convertFailureMessage = fallbackMessage;
+    state.convertFailureDetail = String(error?.lookupDetail || error?.lookupRawMessage || error?.message || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1200);
+    setDocumentWarning("");
     setStatus(
       state.language === "en"
         ? `Failed to open file: ${fallbackMessage}`
         : `파일 열기 실패: ${fallbackMessage}`,
       true
     );
-    showConvertOverlay("문서를 열지 못했습니다.", fallbackMessage, true);
+    showConvertOverlay({
+      title: t("convertFailureTitle"),
+      step: fallbackMessage,
+      percent: 100,
+      helper: t("convertFailureHint"),
+      retryVisible: true,
+      openCompatVisible: isHwpFamily,
+      copyDiagnosticsVisible: true,
+      pulse: false
+    });
     if (!state.pdfDoc) {
       els.emptyHint.classList.remove("hidden");
     }
@@ -4151,6 +4495,25 @@ function bindToolbarActions() {
       await loadDocumentFromPath(state.lastOpenPath);
     });
   }
+  if (els.convertOpenCompatBtn) {
+    els.convertOpenCompatBtn.addEventListener("click", async () => {
+      await openDocumentInCompatibilityMode();
+    });
+  }
+  if (els.convertCopyDiagBtn) {
+    els.convertCopyDiagBtn.addEventListener("click", async () => {
+      const diagnostic = buildConvertDiagnosticText();
+      if (!diagnostic.trim()) {
+        return;
+      }
+      try {
+        await window.lookupAPI.copyText(diagnostic);
+        setStatus(t("convertDiagnosticsCopied"));
+      } catch (_error) {
+        setStatus(t("openErrorGeneric"), true);
+      }
+    });
+  }
   if (els.updateNotesCloseBtn) {
     els.updateNotesCloseBtn.addEventListener("click", () => hideUpdateNotesModal());
   }
@@ -4428,17 +4791,36 @@ function bindMainProcessEvents() {
       }
       const message = String(payload.message || "").trim();
       const stage = String(payload.stage || "").trim();
+      const payloadPercent = Number.isFinite(Number(payload.percent)) ? clamp(Number(payload.percent), 0, 100) : null;
       if (state.documentOpenInProgress) {
-        const title = mapConvertStageLabel(stage);
-        const detail = message || "잠시만 기다려주세요.";
-        showConvertOverlay(title, detail, false);
+        const extFromPayload = String(payload.sourceExt || "").toLowerCase();
+        const extFromState = String(state.sourceExt || getFileExt(state.lastOpenPath || "")).toLowerCase();
+        const isHwpDocument = extFromPayload === ".hwp" || extFromPayload === ".hwpx" || extFromState === ".hwp" || extFromState === ".hwpx";
+        const title = isHwpDocument ? t("convertOpeningTitle") : (state.convertOverlayTitle || "문서를 여는 중입니다.");
+        const stageStep = mapConvertStageStep(stage) || "잠시만 기다려주세요.";
+        let step = sanitizeCompatibilityWarning(message || "") || stageStep;
+        if (String(step).trim() === String(title).trim()) {
+          step = stageStep;
+        }
+        if (String(step).trim() === String(title).trim()) {
+          step = "현재 단계를 처리하고 있습니다.";
+        }
+        const percent = payloadPercent === null ? getConvertStagePercent(stage) : payloadPercent;
+        showConvertOverlay({
+          title,
+          step,
+          percent,
+          helper: t("convertOverlayHelper"),
+          retryVisible: false,
+          pulse: true
+        });
       }
       if (message) {
         setStatus(message);
         return;
       }
       if (stage) {
-        setStatus(`문서 변환 단계: ${stage}`);
+        setStatus(`문서 변환 단계: ${mapConvertStageStep(stage)}`);
       }
     });
   }

@@ -3,8 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("lookupAPI", {
   openDocumentDialog: () => ipcRenderer.invoke("dialog:open-document"),
   openPdfDialog: () => ipcRenderer.invoke("dialog:open-document"),
-  openDocument: (filePath) => ipcRenderer.invoke("document:open", filePath),
-  convertDocument: (filePath) => ipcRenderer.invoke("document:convert", filePath),
+  openDocument: (filePath, options = {}) => ipcRenderer.invoke("document:open", { filePath, options }),
+  convertDocument: (filePath, options = {}) => ipcRenderer.invoke("document:convert", { filePath, options }),
   isSupportedDocument: (filePath) => ipcRenderer.invoke("document:is-supported", filePath),
   savePdfDialog: (options) => ipcRenderer.invoke("dialog:save-pdf", options),
   confirmOverwrite: (options) => ipcRenderer.invoke("dialog:confirm-overwrite", options),
