@@ -15,7 +15,7 @@ if (!TARGET_VERSION) {
 const TARGET_TAG = `v${TARGET_VERSION}`;
 const TARGET_NAME = `lookup v${TARGET_VERSION}`;
 
-const REPAIR_TAGS = ["v1.1.7", "v1.2.0", "v1.2.1", "v1.2.2", "v1.2.3", "v1.2.4", "v1.2.5", "v1.2.6", "v1.2.7", "v1.2.8"];
+const REPAIR_TAGS = ["v1.1.7", "v1.2.0", "v1.2.1", "v1.2.2", "v1.2.3", "v1.2.4", "v1.2.5", "v1.2.6", "v1.2.7", "v1.2.8", "v1.3.0", "v1.3.1", "v1.3.2"];
 const RELEASE_NOTES_DIR = path.resolve("release-notes");
 const RELEASE_DIR = path.resolve("release");
 const TARGET_ASSETS = [`lookup-Setup-${TARGET_VERSION}.exe`, "latest.yml", `lookup-Setup-${TARGET_VERSION}.exe.blockmap`];

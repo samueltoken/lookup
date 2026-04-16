@@ -139,6 +139,8 @@
         </div>
       </header>
 
+      <div id="documentWarningBanner" class="document-warning hidden" role="status" aria-live="polite"></div>
+
       <main id="workspace" class="workspace">
         <aside id="thumbPanel" class="thumb-panel">
           <div class="panel-title" data-i18n="thumbPanelTitle">미리보기 (드래그로 순서 변경)</div>
@@ -156,7 +158,19 @@
             <div class="convert-overlay-card">
               <h2 id="convertOverlayTitle">문서를 여는 중입니다.</h2>
               <p id="convertOverlayMessage">잠시만 기다려주세요.</p>
-              <button id="convertRetryBtn" class="action primary hidden">다시 시도</button>
+              <div class="convert-progress-wrap">
+                <span id="convertOverlayPulse" class="convert-step-pulse" aria-hidden="true"></span>
+                <div class="convert-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                  <div id="convertOverlayProgressBar" class="convert-progress-bar"></div>
+                </div>
+                <span id="convertOverlayPercent" class="convert-progress-percent">0%</span>
+              </div>
+              <p id="convertOverlayHint" class="convert-overlay-hint">문서 크기에 따라 시간이 조금 걸릴 수 있습니다.</p>
+              <div class="convert-overlay-actions">
+                <button id="convertOpenCompatBtn" class="action hidden">호환 보기로 열기</button>
+                <button id="convertCopyDiagBtn" class="action hidden">진단 정보 복사</button>
+                <button id="convertRetryBtn" class="action primary hidden">다시 시도</button>
+              </div>
             </div>
           </div>
           <div id="pagesContainer" class="pages-container"></div>
