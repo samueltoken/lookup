@@ -54,3 +54,73 @@ export function isFocusContinuousMode({
 export function preferredNeighborDepth(isContinuousMode) {
   return isContinuousMode ? 4 : 1;
 }
+
+export function getPageScrollBounds(panel, page) {
+  const panelMaxTop = Math.max(0, panel.scrollHeight - panel.clientHeight);
+  const panelMaxLeft = Math.max(0, panel.scrollWidth - panel.clientWidth);
+  const minTop = clamp(page.offsetTop - 24, 0, panelMaxTop);
+  const minLeft = clamp(page.offsetLeft - 24, 0, panelMaxLeft);
+  return {
+    minTop,
+    maxTop: clamp(page.offsetTop + page.offsetHeight + 24 - panel.clientHeight, minTop, panelMaxTop),
+    minLeft,
+    maxLeft: clamp(page.offsetLeft + page.offsetWidth + 24 - panel.clientWidth, minLeft, panelMaxLeft)
+  };
+}
+
+export function createPageWheelNavigator() {
+  let edgePage = null;
+  let edgeDirection = 0;
+  let edgeDistance = 0;
+  let lastInputTime = -Infinity;
+  let lastTurnTime = -Infinity;
+
+  function reset() {
+    edgePage = null;
+    edgeDirection = 0;
+    edgeDistance = 0;
+    lastInputTime = -Infinity;
+    lastTurnTime = -Infinity;
+  }
+
+  function consume({ pageKey, bounds, scrollTop, scrollLeft, deltaX = 0, deltaY = 0,
+    deltaMode = 0, shiftKey = false, viewportHeight, viewportWidth, now }) {
+    const unitY = deltaMode === 1 ? 16 : deltaMode === 2 ? viewportHeight : 1;
+    const unitX = deltaMode === 1 ? 16 : deltaMode === 2 ? viewportWidth : 1;
+    const dy = shiftKey ? 0 : deltaY * unitY;
+    const dx = (shiftKey ? deltaX || deltaY : deltaX) * unitX;
+    const result = {
+      scrollTop: clamp(scrollTop + dy, bounds.minTop, bounds.maxTop),
+      scrollLeft: clamp(scrollLeft + dx, bounds.minLeft, bounds.maxLeft),
+      pageDirection: 0
+    };
+    const direction = Math.sign(dy);
+    // Reaching the edge consumes this input. Only further vertical input may turn a page.
+    const atEdge = direction > 0 ? scrollTop >= bounds.maxTop - 1.5 : scrollTop <= bounds.minTop + 1.5;
+    if (!direction || Math.abs(dy) <= Math.abs(dx) || !atEdge) {
+      edgePage = null;
+      edgeDistance = 0;
+      lastInputTime = now;
+      return result;
+    }
+    if (edgePage !== pageKey || edgeDirection !== direction || now - lastInputTime > 180) {
+      edgeDistance = 0;
+    }
+    edgePage = pageKey;
+    edgeDirection = direction;
+    lastInputTime = now;
+    if (now - lastTurnTime < 280) {
+      edgeDistance = 0;
+      return result;
+    }
+    edgeDistance += Math.abs(dy);
+    if (edgeDistance >= 36) {
+      result.pageDirection = direction;
+      lastTurnTime = now;
+      edgeDistance = 0;
+    }
+    return result;
+  }
+
+  return { consume, reset };
+}

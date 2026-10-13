@@ -44,7 +44,7 @@ Excel documents include a sheet selector. Access support displays database table
 
 The **Document** tab holds page navigation and zoom. The **View** tab holds layouts, thumbnails, search, fullscreen, and the light/dark switch. **Edit** contains highlights, pen marks, text notes, rotation, and page deletion.
 
-Use single-page, two-page, or current-page view to suit the document. When reading a zoomed page, the mouse wheel moves within that page. **Previous**, **Next**, `Page Up`, and `Page Down` move between pages.
+Use single-page, two-page, or current-page view to suit the document. When reading a zoomed page, the mouse wheel moves within that page. At the bottom, keep scrolling down to move to the next page; at the top, scroll up to return to the bottom of the previous page. **Previous**, **Next**, `Page Up`, and `Page Down` also move between pages.
 
 Search highlights matching text and lists results by page. Image-only pages use text recognition, so a scan may take longer to search and recognition may miss some words.
 

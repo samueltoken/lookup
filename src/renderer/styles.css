@@ -715,7 +715,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   width: 100%;
   flex-direction: row;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: safe center;
   align-content: flex-start;
   align-items: flex-start;
   gap: 18px 22px;

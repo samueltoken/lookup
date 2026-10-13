@@ -4,7 +4,9 @@ import { PDFDocument, degrees, rgb } from "../../node_modules/pdf-lib/dist/pdf-l
 import {
   isFocusPageClippedByViewport,
   estimateFocusFitScale,
-  isFocusContinuousMode
+  isFocusContinuousMode,
+  getPageScrollBounds,
+  createPageWheelNavigator
 } from "./view/focus-scroll.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -13,6 +15,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 let tesseractCreateWorker = null;
+const pageWheelNavigator = createPageWheelNavigator();
 
 async function ensureTesseractCreateWorker() {
   if (typeof tesseractCreateWorker === "function") {
@@ -469,7 +472,8 @@ const state = {
   wheelZoomSettleTimer: 0,
   wheelZoomDelta: 0,
   wheelZoomAnchor: null,
-  singlePageWheelStepTime: 0,
+  wheelScrollPosition: null,
+  wheelPageTurn: null,
   focusContinuousSessionActive: false,
   printActionBusy: false,
   actionOverlayHideTimer: 0,
@@ -2250,6 +2254,7 @@ function updateCurrentPage(pageNum, reasonText = "") {
     return;
   }
   state.currentPage = pageNum;
+  state.wheelScrollPosition = null;
   updateActiveThumbnail();
   updateToolbarState();
   updateSheetSelectorUI();
@@ -2773,6 +2778,15 @@ function updateCurrentPageByScroll() {
     scheduleVisibleRegionRender(70, { neighborDepth: 0 });
     return;
   }
+
+  const wheelPosition = state.wheelScrollPosition;
+  if (wheelPosition?.page === state.currentPage &&
+      Math.abs(els.viewerPanel.scrollTop - wheelPosition.top) < 1.5 &&
+      Math.abs(els.viewerPanel.scrollLeft - wheelPosition.left) < 1.5) {
+    scheduleVisibleRegionRender(70, { neighborDepth: getPreferredNeighborDepth() });
+    return;
+  }
+  state.wheelScrollPosition = null;
 
   const panel = els.viewerPanel;
   const viewportTop = panel.scrollTop;
@@ -4068,11 +4082,38 @@ function isViewerEventTarget(event) {
   return Boolean(target instanceof Node && els.viewerPanel.contains(target));
 }
 
-function isFocusWheelPageStepMode() {
-  if (getEffectiveViewMode() !== "focus") {
-    return false;
+function rememberWheelScrollPosition() {
+  state.wheelScrollPosition = {
+    page: state.currentPage,
+    top: els.viewerPanel.scrollTop,
+    left: els.viewerPanel.scrollLeft
+  };
+}
+
+async function turnPageFromWheel(nextPage, direction, leftRatio) {
+  const request = { document: state.pdfDoc, page: state.currentPage, scale: state.scale };
+  state.wheelPageTurn = request;
+  try {
+    // Unvisited pages may still have a small placeholder. Resolve their real size before entering an edge.
+    const pdfPage = await getPdfPage(nextPage);
+    if (state.wheelPageTurn !== request || state.pdfDoc !== request.document ||
+        state.currentPage !== request.page || state.scale !== request.scale) return;
+    const view = state.pageViews.get(nextPage);
+    if (!view) return;
+    const viewport = pdfPage.getViewport({ scale: state.scale, rotation: getEffectivePageRotation(pdfPage, nextPage) });
+    view.viewport = viewport;
+    view.wrap.style.width = `${viewport.width}px`;
+    view.wrap.style.height = `${viewport.height}px`;
+    await goToPage(nextPage, { smooth: false, anchorMode: "edge", edge: direction > 0 ? "top" : "bottom" });
+    if (state.wheelPageTurn !== request || state.pdfDoc !== request.document || state.currentPage !== nextPage) return;
+    const panel = els.viewerPanel;
+    const bounds = getPageScrollBounds(panel, view.wrap);
+    panel.scrollTop = direction > 0 ? bounds.minTop : bounds.maxTop;
+    panel.scrollLeft = bounds.minLeft + leftRatio * (bounds.maxLeft - bounds.minLeft);
+    rememberWheelScrollPosition();
+  } finally {
+    if (state.wheelPageTurn === request) state.wheelPageTurn = null;
   }
-  return state.zoomMode !== "manual" && !isFocusContinuousScrollMode();
 }
 
 function handleViewerWheel(event) {
@@ -4080,49 +4121,47 @@ function handleViewerWheel(event) {
     return;
   }
   if (event.ctrlKey) {
+    pageWheelNavigator.reset();
+    state.wheelScrollPosition = null;
+    state.wheelPageTurn = null;
     handleCtrlWheelZoom(event);
     return;
   }
+  if (state.wheelPageTurn) {
+    event.preventDefault();
+    return;
+  }
   const currentView = state.pageViews.get(state.currentPage);
-  if (state.zoomMode === "manual" && currentView && isFocusPageClippedByViewport(els.viewerPanel, currentView.wrap)) {
-    // A magnified document stays on its selected page until explicit navigation.
+  if (currentView && (getEffectiveViewMode() === "focus" ||
+      (state.zoomMode === "manual" && isFocusPageClippedByViewport(els.viewerPanel, currentView.wrap)))) {
     event.preventDefault();
     const panel = els.viewerPanel;
-    const page = currentView.wrap;
-    const minTop = Math.max(0, page.offsetTop - 24);
-    const maxTop = Math.max(minTop, page.offsetTop + page.offsetHeight + 24 - panel.clientHeight);
-    const minLeft = Math.max(0, page.offsetLeft - 24);
-    const maxLeft = Math.max(minLeft, page.offsetLeft + page.offsetWidth + 24 - panel.clientWidth);
-    const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 18
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? panel.clientHeight : 1;
-    const horizontal = event.shiftKey ? event.deltaY : event.deltaX;
-    panel.scrollTop = clamp(panel.scrollTop + (event.shiftKey ? 0 : event.deltaY * multiplier), minTop, maxTop);
-    panel.scrollLeft = clamp(panel.scrollLeft + horizontal * multiplier, minLeft, maxLeft);
+    const bounds = getPageScrollBounds(panel, currentView.wrap);
+    const action = pageWheelNavigator.consume({
+      pageKey: state.currentPage, bounds,
+      scrollTop: panel.scrollTop, scrollLeft: panel.scrollLeft,
+      deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, shiftKey: event.shiftKey,
+      viewportHeight: panel.clientHeight, viewportWidth: panel.clientWidth, now: performance.now()
+    });
+    panel.scrollTop = action.scrollTop;
+    panel.scrollLeft = action.scrollLeft;
+    rememberWheelScrollPosition();
+    const nextPage = action.pageDirection && getNeighborPage(action.pageDirection);
+    if (nextPage) {
+      const leftRatio = bounds.maxLeft > bounds.minLeft
+        ? (panel.scrollLeft - bounds.minLeft) / (bounds.maxLeft - bounds.minLeft) : 0.5;
+      turnPageFromWheel(nextPage, action.pageDirection, leftRatio).catch(() => {});
+    }
     return;
   }
-  if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-  if (getEffectiveViewMode() !== "focus") {
-    return;
-  }
-  const delta = normalizeWheelDelta(event);
-  if (Math.abs(delta) < 1.2) {
-    return;
-  }
-  const direction = delta > 0 ? 1 : -1;
-  if (!isFocusWheelPageStepMode()) {
-    return;
-  }
-  const now = Date.now();
-  if (now - state.singlePageWheelStepTime < 90) {
-    event.preventDefault();
-    return;
-  }
-  state.singlePageWheelStepTime = now;
-  event.preventDefault();
-  stepPage(direction, false).catch(() => {});
+  pageWheelNavigator.reset();
+  state.wheelScrollPosition = null;
 }
 
 async function zoomTo(newScale, anchorInput = null, options = {}) {
+  pageWheelNavigator.reset();
+  state.wheelScrollPosition = null;
+  state.wheelPageTurn = null;
   if (!state.pdfDoc) {
     return;
   }
@@ -4191,6 +4230,9 @@ function toggleFullscreenViewMode() {
 }
 
 async function setViewMode(mode, options = {}) {
+  pageWheelNavigator.reset();
+  state.wheelScrollPosition = null;
+  state.wheelPageTurn = null;
   const normalized = normalizeViewMode(mode);
   const prevMode = normalizeViewMode(state.viewMode);
   if (normalized === prevMode && !options.force) {
@@ -4499,6 +4541,9 @@ async function checkForUpdatesFromUI() {
 }
 
 async function loadPdfFromBytes(rawBytes, filePath, meta = {}) {
+  pageWheelNavigator.reset();
+  state.wheelScrollPosition = null;
+  state.wheelPageTurn = null;
   const bytes = toUint8Array(rawBytes);
   // PDF.js transfers its input to the worker. Retain an independent copy for saving.
   const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() });
