@@ -2,3 +2,15 @@ node_modules/
 release/
 dist/
 *.log
+
+# Local verification and working files.
+/output/
+/tmp/
+/scan-results/
+/problems.md
+/solutions.md
+
+# Downloaded ACCDB runtimes and compiled helper classes. Keep build/accdb/src/.
+/build/accdb/java/
+/build/accdb/lib/
+/build/accdb/classes/

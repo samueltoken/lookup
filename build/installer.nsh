@@ -7,11 +7,54 @@
 
 
 !ifndef BUILD_UNINSTALLER
+  Function LookupCleanupLegacy
+    ; Run after the standard upgrade uninstaller and before copying new files.
+    ; The helper preserves user data and only removes verified lookup artifacts.
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /oname=lookup-legacy-cleanup.ps1 "${BUILD_RESOURCES_DIR}\legacy-cleanup.ps1"
+    DetailPrint "이전 lookup 설치 정리 중"
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\lookup-legacy-cleanup.ps1" -InstallDir "$INSTDIR" -Phase Apply -AllowElevation'
+    Pop $R6
+    Pop $R7
+    ${If} $R6 != 0
+      DetailPrint "$R7"
+      MessageBox MB_OK|MB_ICONEXCLAMATION "이전 lookup 설치 정리에 실패했습니다.$\r$\n실행 중인 lookup을 닫고 관리자 권한 확인 후 다시 설치해 주세요." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    ClearErrors
+  FunctionEnd
+
+  !macro customUnInstallCheck
+    ; Keep electron-builder's failure handling for a running/broken uninstaller.
+    ; A missing old uninstaller is handled by the verified cleanup helper.
+    ${IfNot} ${Errors}
+      ${If} $R0 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+    ${EndIf}
+    ${If} $installMode != "all"
+      Call LookupCleanupLegacy
+    ${EndIf}
+  !macroend
+
+  !macro customUnInstallCheckCurrentUser
+    ${IfNot} ${Errors}
+      ${If} $R0 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+    ${EndIf}
+    Call LookupCleanupLegacy
+  !macroend
+
   !macro customInstall
     ; Shortcut/icon refresh to avoid stale Electron cache.
-    Delete "$DESKTOP\lookup*.lnk"
     Delete "$DESKTOP\lookup.lnk"
-    Delete "$SMPROGRAMS\lookup*.lnk"
     Delete "$SMPROGRAMS\lookup.lnk"
     Delete "$SMPROGRAMS\lookup\lookup.lnk"
 
@@ -35,8 +78,12 @@
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".docx" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xls" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xlsx" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".xlsm" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".accdb" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".ppt" ""
     WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".pptx" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".html" ""
+    WriteRegStr HKCU "Software\Classes\Applications\lookup.exe\SupportedTypes" ".htm" ""
 
     WriteRegStr HKCU "Software\Classes\lookup.PDF" "" "lookup PDF"
     WriteRegStr HKCU "Software\Classes\lookup.PDF\DefaultIcon" "" "$INSTDIR\resources\icon.ico,0"
@@ -87,6 +134,14 @@
   !macroend
 !else
   !macro customUnInstall
+    ; Remove the exact shortcuts created by customInstall, including when
+    ; electron-builder's standard shortcut creation is disabled.
+    Delete "$DESKTOP\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup\lookup.lnk"
+    Delete "$SMPROGRAMS\lookup\lookup Uninstall.lnk"
+    RMDir "$SMPROGRAMS\lookup"
+
     DeleteRegKey HKCU "Software\Classes\Applications\lookup.exe"
     DeleteRegKey HKCU "Software\Classes\lookup.PDF"
     DeleteRegKey HKCU "Software\Classes\lookup.HWP"

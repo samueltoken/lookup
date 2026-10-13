@@ -1,13 +1,27 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("lookupAPI", {
   openDocumentDialog: () => ipcRenderer.invoke("dialog:open-document"),
   openPdfDialog: () => ipcRenderer.invoke("dialog:open-document"),
   openDocument: (filePath, options = {}) => ipcRenderer.invoke("document:open", { filePath, options }),
+  openWebPage: (url) => ipcRenderer.invoke("document:open-web", url),
   convertDocument: (filePath, options = {}) => ipcRenderer.invoke("document:convert", { filePath, options }),
   isSupportedDocument: (filePath) => ipcRenderer.invoke("document:is-supported", filePath),
+  resolveDroppedPath: (payload = {}) => ipcRenderer.invoke("document:resolve-drop-path", payload),
+  getDroppedFilePath: (fileLike) => {
+    try {
+      if (webUtils && typeof webUtils.getPathForFile === "function") {
+        const resolved = webUtils.getPathForFile(fileLike);
+        return typeof resolved === "string" ? resolved : "";
+      }
+    } catch (_error) {
+      // ignore drop path resolver failures
+    }
+    return "";
+  },
   savePdfDialog: (options) => ipcRenderer.invoke("dialog:save-pdf", options),
   confirmOverwrite: (options) => ipcRenderer.invoke("dialog:confirm-overwrite", options),
+  confirmDocumentSwitch: () => ipcRenderer.invoke("dialog:confirm-document-switch"),
   readPdfFile: (filePath) => ipcRenderer.invoke("pdf:read-file", filePath),
   writePdfFile: (filePath, data) => ipcRenderer.invoke("pdf:write-file", { filePath, data }),
   printPreview: (data, fileName) => ipcRenderer.invoke("window:print-preview", { data, fileName }),

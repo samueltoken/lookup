@@ -1,63 +1,84 @@
+<img src="docs/assets/logo.png" width="88" alt="lookup duck logo">
+
 # lookup
 
-![lookup duck icon](build/icon.png)
+A document viewer for Windows. Open a file, find what matters, and get back to work.
 
-로그인 없이 바로 여는 Windows 문서 뷰어입니다.  
-복잡한 설정 없이 문서를 열어서 **읽고, 찾고, 인쇄**하는 데 집중했습니다.
+[Download for Windows](https://github.com/samueltoken/lookup/releases/latest) · [Website](https://samueltoken.github.io/lookup/) · [Report an issue](https://github.com/samueltoken/lookup/issues)
 
-## 한눈에 보기
-- 앱 이름: `lookup`
-- 아이콘: 노란 오리 아이콘
-- 목적: 문서를 “빠르게 보기” (편집 프로그램 대체가 아닌 열람 중심)
+lookup brings PDFs, Korean HWP documents, and Office files into one reading window. It includes text search, page thumbnails, zoom, fullscreen, printing, highlights, pen marks, and text notes. There is no account to create or document upload service.
 
-## 지원 형식
-- PDF: `.pdf`
-- 한글: `.hwp`, `.hwpx`
-- 워드: `.doc`, `.docx`
-- 엑셀: `.xls`, `.xlsx`
-- 파워포인트: `.ppt`, `.pptx`
+## Install
 
-> 비-PDF 문서는 앱 내부에서 임시 변환 후 표시합니다.  
-> 원본 파일은 수정하지 않습니다.
+Download the **Setup** installer from the [latest release](https://github.com/samueltoken/lookup/releases/latest), close any running instance of lookup, and run the installer. Windows x64 is the build target.
 
-## 기본 사용법
-1. 앱 실행
-2. `열기` 버튼 클릭 또는 파일 드래그
-3. 필요하면 검색 / 확대 / 전체화면 / 인쇄 사용
+The installer cleans up verified files and shortcuts from older lookup installations. Documents and saved settings are kept; cleanup in shared Windows folders may request administrator permission.
 
-명령줄로도 실행할 수 있습니다.
+Open documents with **Open**, drag a file into the window, or use **Open with → lookup** in File Explorer. To remove the app, use **Windows Settings → Apps → Installed apps → lookup → Uninstall**. Deleting the downloaded installer does not remove the installed app.
 
-```bash
-lookup.exe "C:\문서\파일.pdf"
+## File formats
+
+| Type | Extensions |
+| --- | --- |
+| PDF | `.pdf` |
+| Hangul | `.hwp`, `.hwpx` |
+| Word | `.doc`, `.docx` |
+| Excel | `.xls`, `.xlsx`, `.xlsm` |
+| PowerPoint | `.ppt`, `.pptx` |
+| Access tables | `.accdb` |
+| HTML | `.html`, `.htm` |
+
+PDFs open directly. Other formats are converted locally for viewing; the source file is not rewritten during conversion. Saving annotations or page changes is a separate action, so use **Save As** to keep an untouched original.
+
+Conversion is not identical to opening a file in its original editor. Complex layouts, embedded objects, unusual fonts, and some older files may render differently. Installed Microsoft Office or LibreOffice may improve conversion for supported formats. Access support reads tables, not forms or reports.
+
+The **Webpage** command opens a web address as a PDF. Login requirements, bot checks, and content that loads on demand may prevent a complete capture.
+
+## Everyday controls
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+O` | Open a file |
+| `Ctrl+F` | Find text |
+| `Ctrl+Shift+S` | Save As |
+| `Ctrl+P` | Print |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo edits |
+
+A file path also works from the command line:
+
+```powershell
+lookup.exe "C:\Documents\example.pdf"
 ```
 
-## 주요 기능
-- 연속 스크롤 보기
-- 페이지 이동 / 확대·축소
-- 단어 검색 + 위치 하이라이트
-- 전체화면 보기
-- 주석(형광펜, 펜, 텍스트 메모)
-- 인쇄(`Ctrl+P`)
-- 자동 업데이트(앱 내부에서 확인)
+## Local processing
 
-## 설치 제거
-- Windows 설정 > 앱 > 설치된 앱 > `lookup` 제거
-- 또는 시작 메뉴의 `lookup Uninstall` 실행
+Local documents are rendered and converted on your computer. Opening a web address contacts that website, and update checks contact GitHub. lookup does not send documents to a remote conversion service.
 
-## 보안/개인정보
-- 로그인/회원가입 없음
-- 문서 업로드 서버 없음(오프라인 처리 중심)
-- 원본 파일 직접 수정 없음(임시 변환 파일 사용)
-- 외부 웹페이지 자동 이동/팝업 차단 적용
+## Build from source
 
-## 개발자 참고
-```bash
-npm install
+On Windows, with Node.js and npm installed:
+
+```powershell
+npm ci
+npm run setup:accdb
 npm start
 ```
 
-```bash
+Create an installer or a portable build:
+
+```powershell
 npm run dist
+npm run dist:portable
 ```
 
-빌드 산출물은 `release/` 폴더에 생성됩니다.
+Builds are written to `release/`. `setup:accdb` downloads and prepares the separate Java runtime for Access table conversion. Microsoft Office and LibreOffice are optional local conversion engines, not npm dependencies.
+
+The website is plain HTML and CSS in [`docs/`](docs/), with no build step.
+
+## Bugs and feedback
+
+Please [open an issue](https://github.com/samueltoken/lookup/issues) with the app version, file type, what happened, and what you expected. A screenshot or a small, non-sensitive sample helps with rendering problems. Keep private documents and personal details out of public issues.
+
+## License
+
+MIT, as declared in [`package.json`](package.json). Bundled third-party components retain their own licenses.

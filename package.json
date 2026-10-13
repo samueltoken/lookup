@@ -1,10 +1,11 @@
 {
   "name": "lookup",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "description": "Free document viewer without login",
   "main": "main.js",
   "scripts": {
-    "build:icon": "node scripts/generate-duck-icon.mjs",
+    "build:icon": "node scripts/generate-app-icon.mjs",
+    "setup:accdb": "node scripts/setup-accdb-runtime.mjs",
     "start": "npm run build:icon && electron .",
     "dist": "npm run build:icon && node scripts/check-utf8-messages.mjs && electron-builder --win nsis --publish never && node scripts/generate-latest-yml.mjs",
     "dist:portable": "npm run build:icon && node scripts/check-utf8-messages.mjs && electron-builder --win portable --publish never --config.artifactName=lookup-Portable-${version}.${ext}",
@@ -65,6 +66,18 @@
       {
         "from": "build/security",
         "to": "security"
+      },
+      {
+        "from": "build/accdb/java",
+        "to": "accdb/java"
+      },
+      {
+        "from": "build/accdb/lib",
+        "to": "accdb/lib"
+      },
+      {
+        "from": "build/accdb/classes",
+        "to": "accdb/classes"
       }
     ],
     "files": [
@@ -131,6 +144,18 @@
           "icon": "build/icon.ico"
         },
         {
+          "ext": "xlsm",
+          "name": "lookup XLSM",
+          "description": "Open XLSM with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "accdb",
+          "name": "lookup ACCDB",
+          "description": "Open ACCDB with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
           "ext": "ppt",
           "name": "lookup PPT",
           "description": "Open PPT with lookup",
@@ -140,6 +165,18 @@
           "ext": "pptx",
           "name": "lookup PPTX",
           "description": "Open PPTX with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "html",
+          "name": "lookup HTML",
+          "description": "Open HTML/Notion export with lookup",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "htm",
+          "name": "lookup HTM",
+          "description": "Open HTML/Notion export with lookup",
           "icon": "build/icon.ico"
         }
       ]

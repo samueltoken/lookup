@@ -9,30 +9,38 @@
   <body>
     <div class="app-shell">
       <header class="top-toolbar">
-        <div class="ribbon-tabs" role="tablist" aria-label="리본 탭">
-          <button id="tabHomeBtn" class="ribbon-tab active" data-ribbon-tab="home" data-i18n="ribbonHome">홈</button>
-          <button id="tabViewBtn" class="ribbon-tab" data-ribbon-tab="view" data-i18n="ribbonView">보기</button>
-          <button id="tabToolsBtn" class="ribbon-tab" data-ribbon-tab="tools" data-i18n="ribbonTools">도구</button>
-        </div>
-
-        <div class="ribbon-panels">
-          <section class="ribbon-panel active" data-ribbon-panel="home">
-            <div class="ribbon-group">
-              <div class="toolbar-group">
+        <div class="toolbar-heading">
+          <div class="app-brand" aria-label="lookup">
+            <span class="brand-mark" aria-hidden="true"><img src="./assets/logo.png" alt="lookup 오리 로고" draggable="false" /></span>
+            <span>lookup</span>
+          </div>
+          <div class="ribbon-tabs" role="tablist" aria-label="문서 도구">
+            <button id="tabHomeBtn" class="ribbon-tab active" role="tab" aria-selected="true" aria-controls="homePanel" data-ribbon-tab="home" data-i18n="ribbonHome">문서</button>
+            <button id="tabViewBtn" class="ribbon-tab" role="tab" aria-selected="false" aria-controls="viewPanel" data-ribbon-tab="view" data-i18n="ribbonView">보기</button>
+            <button id="tabToolsBtn" class="ribbon-tab" role="tab" aria-selected="false" aria-controls="toolsPanel" data-ribbon-tab="tools" data-i18n="ribbonTools">편집</button>
+          </div>
+          <div class="toolbar-file-actions" role="group" aria-label="파일">
                 <button id="openFileBtn" class="action primary" data-i18n="open">열기</button>
+                <button id="openWebPageBtn" class="action" data-i18n="openWebPage">웹페이지</button>
                 <button id="saveAsBtn" class="action" data-i18n="saveAs">다른 이름 저장</button>
-                <button id="saveOverwriteBtn" class="action" data-i18n="saveOverwrite">덮어쓰기</button>
+                <button id="saveOverwriteBtn" class="action" data-i18n="saveOverwrite">저장</button>
                 <button id="printBtn" class="action icon-button" aria-label="인쇄" title="인쇄 (Ctrl+P)">
                   <span class="button-icon" aria-hidden="true"></span>
                 </button>
-              </div>
-              <div class="ribbon-group-title" data-i18n="ribbonGroupFile">파일</div>
+          </div>
+        </div>
+
+        <div class="ribbon-panels">
+          <section id="homePanel" class="ribbon-panel active" role="tabpanel" aria-labelledby="tabHomeBtn" data-ribbon-panel="home">
+            <div class="document-identity">
+              <span id="documentNameLabel" class="document-name" data-i18n="emptyDocument">새 문서</span>
+              <span id="documentModifiedIndicator" class="document-modified hidden" data-i18n="unsavedChanges">저장 전</span>
             </div>
 
             <div class="ribbon-group">
               <div class="toolbar-group">
                 <button id="prevPageBtn" class="action" data-i18n="prev">이전</button>
-                <input id="pageInput" class="page-input" type="number" min="1" value="1" />
+                <input id="pageInput" class="page-input" type="number" min="1" value="1" aria-label="현재 페이지" />
                 <span id="pageCountLabel" class="muted">/ 0</span>
                 <button id="nextPageBtn" class="action" data-i18n="next">다음</button>
               </div>
@@ -58,16 +66,7 @@
             </div>
           </section>
 
-          <section class="ribbon-panel" data-ribbon-panel="view">
-            <div class="ribbon-group">
-              <div class="toolbar-group">
-                <button id="rotateLeftBtn" class="action" data-i18n="rotateLeft">왼쪽 회전</button>
-                <button id="rotateRightBtn" class="action" data-i18n="rotateRight">오른쪽 회전</button>
-                <button id="deletePageBtn" class="action danger" data-i18n="deletePage">페이지 삭제</button>
-              </div>
-              <div class="ribbon-group-title" data-i18n="ribbonGroupRotate">회전/정리</div>
-            </div>
-
+          <section id="viewPanel" class="ribbon-panel" role="tabpanel" aria-labelledby="tabViewBtn" data-ribbon-panel="view">
             <div class="ribbon-group">
               <div class="toolbar-group">
                 <button id="viewSingleBtn" class="action icon-button view-icon-button" aria-label="단면 보기" title="단면 보기">
@@ -101,6 +100,7 @@
                   id="searchInput"
                   class="search-input"
                   type="text"
+                  aria-label="문서 검색"
                   data-i18n-placeholder="searchPlaceholder"
                   placeholder="문서 검색"
                 />
@@ -113,7 +113,7 @@
             </div>
           </section>
 
-          <section class="ribbon-panel" data-ribbon-panel="tools">
+          <section id="toolsPanel" class="ribbon-panel" role="tabpanel" aria-labelledby="tabToolsBtn" data-ribbon-panel="tools">
             <div class="ribbon-group">
               <div class="toolbar-group">
                 <button id="editViewBtn" class="action mode active" data-mode="view" data-i18n="modeView">보기</button>
@@ -122,6 +122,15 @@
                 <button id="editTextBtn" class="action mode" data-mode="text" data-i18n="modeText">텍스트 메모</button>
               </div>
               <div class="ribbon-group-title" data-i18n="ribbonGroupAnnotate">주석 도구</div>
+            </div>
+
+            <div class="ribbon-group">
+              <div class="toolbar-group">
+                <button id="rotateLeftBtn" class="action" data-i18n="rotateLeft">왼쪽 회전</button>
+                <button id="rotateRightBtn" class="action" data-i18n="rotateRight">오른쪽 회전</button>
+                <button id="deletePageBtn" class="action danger" data-i18n="deletePage">페이지 삭제</button>
+              </div>
+              <div class="ribbon-group-title" data-i18n="ribbonGroupRotate">회전/정리</div>
             </div>
 
             <div class="ribbon-group">
@@ -143,7 +152,7 @@
 
       <main id="workspace" class="workspace">
         <aside id="thumbPanel" class="thumb-panel">
-          <div class="panel-title" data-i18n="thumbPanelTitle">미리보기 (드래그로 순서 변경)</div>
+          <div class="panel-title" data-i18n="thumbPanelTitle">페이지</div>
           <div id="thumbnailList" class="thumb-list"></div>
         </aside>
 
@@ -151,21 +160,23 @@
 
         <section id="viewerPanel" class="viewer-panel" tabindex="0">
           <div id="emptyHint" class="empty-hint">
-            <h1>lookup</h1>
-            <p data-i18n="dropHint">문서를 끌어놓거나 열기 버튼을 눌러 주세요.</p>
+            <div class="empty-document-icon" aria-hidden="true"><img src="./assets/logo.png" alt="lookup 오리 로고" draggable="false" /></div>
+            <h1 data-i18n="emptyDocumentTitle">문서 열기</h1>
+            <p class="empty-formats">PDF · HWP · Office</p>
+            <button id="emptyOpenBtn" class="action primary empty-open-button" data-i18n="chooseFile">파일 선택</button>
           </div>
-          <div id="convertOverlay" class="convert-overlay hidden">
+          <div id="convertOverlay" class="convert-overlay hidden" role="status" aria-live="polite">
             <div class="convert-overlay-card">
-              <h2 id="convertOverlayTitle">문서를 여는 중입니다.</h2>
-              <p id="convertOverlayMessage">잠시만 기다려주세요.</p>
+              <h2 id="convertOverlayTitle">문서 열기</h2>
+              <p id="convertOverlayMessage">준비 중</p>
               <div class="convert-progress-wrap">
                 <span id="convertOverlayPulse" class="convert-step-pulse" aria-hidden="true"></span>
-                <div class="convert-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="convert-progress-track" role="progressbar" aria-label="문서 처리 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                   <div id="convertOverlayProgressBar" class="convert-progress-bar"></div>
                 </div>
                 <span id="convertOverlayPercent" class="convert-progress-percent">0%</span>
               </div>
-              <p id="convertOverlayHint" class="convert-overlay-hint">문서 크기에 따라 시간이 조금 걸릴 수 있습니다.</p>
+              <p id="convertOverlayHint" class="convert-overlay-hint hidden"></p>
               <div class="convert-overlay-actions">
                 <button id="convertOpenCompatBtn" class="action hidden">호환 보기로 열기</button>
                 <button id="convertCopyDiagBtn" class="action hidden">진단 정보 복사</button>
@@ -218,7 +229,7 @@
 
       <footer id="statusBar" class="status-bar">
         <div class="status-main">
-          <span id="statusText">준비 완료</span>
+          <span id="statusText" role="status" aria-live="polite">준비</span>
           <span id="currentVersionLabel" class="muted">현재 버전 -</span>
           <span id="targetVersionLabel" class="muted hidden">대상 버전 -</span>
         </div>
@@ -229,6 +240,21 @@
           <span id="updateProgressText" class="update-progress-text">0%</span>
         </div>
       </footer>
+    </div>
+
+    <div id="webPageModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="webPageTitle">
+      <form id="webPageForm" class="modal-card web-page-card">
+        <div class="modal-head"><h2 id="webPageTitle" data-i18n="openWebPage">웹페이지</h2></div>
+        <label class="web-url-field" for="webPageUrlInput">
+          <span data-i18n="webPageAddress">주소</span>
+          <input id="webPageUrlInput" class="web-url-input" type="url" placeholder="https://" autocomplete="url" spellcheck="false" required />
+        </label>
+        <p id="webPageError" class="web-page-error hidden" role="alert"></p>
+        <div class="modal-actions">
+          <button id="webPageCancelBtn" type="button" class="action" data-i18n="textMemoCancel">취소</button>
+          <button id="webPageOpenBtn" type="submit" class="action primary" data-i18n="open">열기</button>
+        </div>
+      </form>
     </div>
 
     <div id="updateNotesModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="updateNotesTitle">
