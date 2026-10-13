@@ -58,7 +58,7 @@ async function run() {
     }, path.join(tmp, 'viewer-empty.png'));
     if (process.argv.includes('--web-ui') || localUrl) {
       await page.locator('#openWebPageBtn').click();
-      await page.locator('#webPageUrlInput').fill(localUrl || 'https://example.org/');
+      await page.locator('#webPageUrlInput').fill(localUrl || process.env.LOOKUP_WEB_REGRESSION_URL || 'https://example.org/');
       await page.locator('#webPageOpenBtn').click();
       await page.waitForFunction(() => {
         const count = Number(document.querySelector('#pageCountLabel').textContent.replace(/[^\d]/g, ''));
@@ -169,37 +169,41 @@ async function run() {
       console.log(JSON.stringify({ viewerChecks: 'passed', scroll: after, leftEdge: clippedLeft }));
     }
     if (process.argv.includes('--inspect-live')) {
-      const live = await app.evaluate(async ({ BrowserWindow }) => {
+      const sourceUrl = process.env.LOOKUP_WEB_REGRESSION_URL;
+      if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) throw new Error('Set LOOKUP_WEB_REGRESSION_URL to an HTTP(S) URL for live inspection.');
+      const live = await app.evaluate(async ({ BrowserWindow }, sourceUrl) => {
         const window = new BrowserWindow({ show: false, width: 1280, height: 1000, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, offscreen: true } });
         global.lookupLiveWindow = window;
-        await window.loadURL('https://example.org/');
+        await window.loadURL(sourceUrl);
         await new Promise(resolve => setTimeout(resolve, 2500));
         return {
           title: window.webContents.getTitle(),
           frames: window.webContents.mainFrame.framesInSubtree.map(frame => ({ url: frame.url, name: frame.name })),
           dom: await window.webContents.executeJavaScript(`({height: document.body.scrollHeight, images:document.images.length, iframe: [...document.querySelectorAll('iframe')].map(el=>({id:el.id,src:el.src,height:el.clientHeight})),buttons:[...document.querySelectorAll('button,a')].filter(el=>el.textContent.includes('상세정보 더보기')).map(el=>({tag:el.tagName,id:el.id,cls:el.className,href:el.getAttribute('href')}))})`)
         };
-      });
+      }, sourceUrl);
       console.log(JSON.stringify({ live }, null, 2));
       await app.evaluate(async (_electron, outputPath) => {
         const image = await global.lookupLiveWindow.webContents.capturePage();
         global.lookupFs.writeFileSync(outputPath, image.toPNG());
         global.lookupLiveWindow.destroy();
-      }, path.join(tmp, 'gmarket-screen.png'));
+      }, path.join(tmp, 'web-screen.png'));
       return;
     }
     if (process.argv.includes('--live-pdf')) {
+      const sourceUrl = process.env.LOOKUP_WEB_REGRESSION_URL;
+      if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) throw new Error('Set LOOKUP_WEB_REGRESSION_URL to an HTTP(S) URL for live capture.');
       const output = path.join(root, 'output', 'pdf', 'web-capture.pdf');
       fs.mkdirSync(path.dirname(output), { recursive: true });
-      const result = await app.evaluate(async (_electron, output) => {
+      const result = await app.evaluate(async (_electron, { output, sourceUrl }) => {
         const result = await global.lookupTest.renderHtmlToPdfBuffer({
-          sourceUrl: 'https://example.org/',
+          sourceUrl,
           printOptions: { sourceType: 'web-html', normalizeScrollableContent: true }
         });
         global.lookupFs.writeFileSync(output, result.pdfBuffer);
         return { bytes: result.pdfBuffer.length, diagnostics: result.diagnostics };
-      }, output);
-      fs.writeFileSync(path.join(tmp, 'gmarket-diagnostics.json'), JSON.stringify(result, null, 2));
+      }, { output, sourceUrl });
+      fs.writeFileSync(path.join(tmp, 'web-diagnostics.json'), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result, null, 2));
     }
     console.log(JSON.stringify({ rendererErrors: errors, status: await page.locator('#statusText').textContent() }));
