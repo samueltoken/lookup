@@ -128,7 +128,7 @@ const menuText = {
     languageEn: "English",
     hwpPrintFallback: "HWP 출력 방식(PDF 변환용) 보조 시도 허용",
     updateCheck: "업데이트 확인",
-    copySupportLink: "문의 링크 복사",
+    copyDeveloperContact: "개발자 문의 이메일 복사",
     versionInfo: "버전 정보"
   },
   en: {
@@ -155,7 +155,7 @@ const menuText = {
     languageEn: "English",
     hwpPrintFallback: "Allow HWP print-style fallback (PDF conversion)",
     updateCheck: "Check for Updates",
-    copySupportLink: "Copy Support Link",
+    copyDeveloperContact: "Copy Developer Email",
     versionInfo: "Version Info"
   }
 };
@@ -7690,8 +7690,8 @@ function createMenu() {
           click: () => sendToRenderer("menu-action", "check-update")
         },
         {
-          label: mt("copySupportLink"),
-          click: () => sendToRenderer("menu-action", "copy-support-link")
+          label: mt("copyDeveloperContact"),
+          click: () => sendToRenderer("menu-action", "copy-developer-email")
         },
         { type: "separator" },
         {

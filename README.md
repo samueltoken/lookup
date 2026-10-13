@@ -79,6 +79,8 @@ The website is plain HTML and CSS in [`docs/`](docs/), with no build step.
 
 Please [open an issue](https://github.com/samueltoken/lookup/issues) with the app version, file type, what happened, and what you expected. A screenshot or a small, non-sensitive sample helps with rendering problems. Keep private documents and personal details out of public issues.
 
+For other questions, contact [lamsaiku65@gmail.com](mailto:lamsaiku65@gmail.com).
+
 ## License
 
 MIT, as declared in [`package.json`](package.json). Bundled third-party components retain their own licenses.
