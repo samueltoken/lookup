@@ -48,7 +48,7 @@ Use single-page, two-page, or current-page view to suit the document. When readi
 
 Search highlights matching text and lists results by page. Image-only pages use text recognition, so a scan may take longer to search and recognition may miss some words.
 
-**Save As** writes the displayed document and its edits to a PDF. Use it when the original should stay untouched. **Save** updates an opened PDF after confirmation; converted files require **Save As**. Neither action writes annotations back into a Word, Excel, PowerPoint, or Hangul file.
+**Save As** writes the displayed document and its edits to a PDF. Use it when the original should stay untouched. **Overwrite** updates an opened PDF after confirmation; converted files require **Save As**. Neither action writes annotations back into a Word, Excel, PowerPoint, or Hangul file.
 
 ### Keyboard shortcuts
 
@@ -61,7 +61,7 @@ Search highlights matching text and lists results by page. Image-only pages use 
 | `Ctrl+0` | Reset zoom |
 | `F11` | Enter / leave fullscreen |
 | `Ctrl+D` | Switch light / dark mode |
-| `Ctrl+S` | Save the current PDF |
+| `Ctrl+S` | Overwrite the current PDF |
 | `Ctrl+Shift+S` | Save As |
 | `Ctrl+P` | Print |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo edits |
