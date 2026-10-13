@@ -134,7 +134,7 @@ const i18n = {
     viewModeSpreadTip: "양면 보기",
     viewModeFocusTip: "현재 페이지만 보기",
     searchResults: "검색 결과",
-    copiedContact: "이메일 복사 완료",
+    copiedSupportLink: "문의 링크 복사 완료",
     languageChangedKo: "한국어",
     languageChangedEn: "English",
     updateStarted: "업데이트 확인 중",
@@ -190,7 +190,7 @@ const i18n = {
     updateNotesClose: "확인",
     updateNotesSectionGeneral: "변경 사항",
     updateNotesSectionAssets: "포함 파일",
-    copyDeveloperEmail: "개발자 문의 이메일 복사",
+    copySupportLink: "문의 링크 복사",
     languageKo: "한국어",
     languageEn: "English",
     versionInfo: "버전 정보",
@@ -284,7 +284,7 @@ const i18n = {
     viewModeSpreadTip: "Two-page spread",
     viewModeFocusTip: "Focus on current page only",
     searchResults: "Search Results",
-    copiedContact: "Developer email copied to clipboard.",
+    copiedSupportLink: "Support link copied.",
     languageChangedKo: "Language switched to Korean.",
     languageChangedEn: "Language switched to English.",
     updateStarted: "Update check started.",
@@ -340,7 +340,7 @@ const i18n = {
     updateNotesClose: "Close",
     updateNotesSectionGeneral: "Release notes",
     updateNotesSectionAssets: "Included files",
-    copyDeveloperEmail: "Copy Developer Email",
+    copySupportLink: "Copy Support Link",
     languageKo: "한국어",
     languageEn: "English",
     versionInfo: "Version Info",
@@ -5423,9 +5423,9 @@ function bindMainProcessEvents() {
           setStatus(t("updateStarted"));
         }
       },
-      "copy-developer-email": async () => {
-        await window.lookupAPI.copyText("lamsaiku65@gmail.com");
-        setStatus(t("copiedContact"));
+      "copy-support-link": async () => {
+        await window.lookupAPI.copyText("https://github.com/samueltoken/lookup/issues");
+        setStatus(t("copiedSupportLink"));
       },
       "set-language-ko": async () => {
         await setLanguage("ko", true);
